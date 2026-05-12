@@ -1,0 +1,48 @@
+# ── Frontend ──────────────────────────────────────
+node_modules
+dist
+dist-ssr
+*.local
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ── Backend (Python) ──────────────────────────────
+.venv
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Datos / audio ─────────────────────────────────
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# ── OS ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editores ──────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ── Misc ──────────────────────────────────────────
+.env
+.env.*
