@@ -25,9 +25,9 @@ class SpectrogramPreview(QWidget):
         self.setStyleSheet("background-color:#111;")
         self._placeholder = (
             "El espectrograma aparecerá aquí.\n\n"
-            "① Cargá el audio\n"
-            "② Ajustá los parámetros\n"
-            "③ Presioná  👁  Ver espectrograma"
+            "1. Cargá el audio\n"
+            "2. Ajustá los parámetros\n"
+            "3. Presioná  Ver espectrograma"
         )
 
     # ── Public API ────────────────────────────────────────────────────────────

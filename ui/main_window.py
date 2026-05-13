@@ -74,7 +74,7 @@ class _LS(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Rat USV Analyzer")
+        self.setWindowTitle("Ayudantia Itba")
         self.resize(1380, 820)
 
         self._audio_engine: AudioEngine = None
@@ -109,14 +109,14 @@ class MainWindow(QMainWindow):
         g1 = QGroupBox("Paso 1 — Cargar archivos")
         gl1 = QVBoxLayout(g1)
 
-        self._vid_btn = QPushButton("📁  Cargar Video…")
+        self._vid_btn = QPushButton("Cargar Video…")
         self._vid_btn.setFixedHeight(30)
         self._vid_btn.clicked.connect(self._open_video)
         self._vid_lbl = QLabel("Sin video cargado")
         self._vid_lbl.setWordWrap(True)
         self._vid_lbl.setStyleSheet("color:#888; font-size:11px;")
 
-        self._aud_btn = QPushButton("📁  Cargar Audio (.wav)…")
+        self._aud_btn = QPushButton("Cargar Audio (.wav)…")
         self._aud_btn.setFixedHeight(30)
         self._aud_btn.clicked.connect(self._open_audio)
         self._aud_lbl = QLabel("Sin audio cargado")
@@ -189,7 +189,7 @@ class MainWindow(QMainWindow):
         gl2.addWidget(self._contrast)
         gl2.addWidget(self._brightness)
 
-        self._prev_btn = QPushButton("👁  Ver espectrograma")
+        self._prev_btn = QPushButton("Ver espectrograma")
         self._prev_btn.setFixedHeight(30)
         self._prev_btn.setEnabled(False)
         self._prev_btn.clicked.connect(self._run_spectrogram)
@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
         off_row.addWidget(self._offset)
         gl3.addLayout(off_row)
 
-        self._gen_btn = QPushButton("🎬  Generar Video")
+        self._gen_btn = QPushButton("Generar Video")
         self._gen_btn.setFixedHeight(36)
         self._gen_btn.setStyleSheet("font-weight:bold; font-size:13px;")
         self._gen_btn.setEnabled(False)
@@ -337,7 +337,7 @@ class MainWindow(QMainWindow):
         self._video_engine = engine
         name = os.path.basename(engine.path)
         self._vid_lbl.setText(
-            f"✓ {name}\n"
+            f"{name}\n"
             f"{engine.frame_count} frames · {engine.fps:.2f} fps · {engine.duration:.1f} s"
         )
         self._vid_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
@@ -348,7 +348,7 @@ class MainWindow(QMainWindow):
         self._audio_engine = engine
         name = os.path.basename(engine.path)
         self._aud_lbl.setText(
-            f"✓ {name}\n{engine.sr} Hz · {engine.duration:.1f} s"
+            f"{name}\n{engine.sr} Hz · {engine.duration:.1f} s"
         )
         self._aud_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
         self._status.showMessage(f"Audio: {name}")
@@ -413,7 +413,7 @@ class MainWindow(QMainWindow):
     def _generate_video(self):
         if self._spec_rgba is None:
             QMessageBox.information(self, "Sin espectrograma",
-                                    "Primero presioná  👁  Ver espectrograma.")
+                                    "Primero presioná Ver espectrograma.")
             return
         out_path = self._out_edit.text().strip()
         if not out_path:
@@ -464,7 +464,7 @@ class MainWindow(QMainWindow):
 
     def _on_render_done(self, path: str):
         self._progress.setValue(100)
-        self._prog_lbl.setText(f"✓ Guardado: {os.path.basename(path)}")
+        self._prog_lbl.setText(f"Guardado: {os.path.basename(path)}")
         self._status.showMessage(f"Video generado: {path}")
         QMessageBox.information(self, "¡Listo!",
                                 f"Video generado exitosamente:\n\n{path}")

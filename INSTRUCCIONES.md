@@ -1,4 +1,4 @@
-# Rat USV Analyzer — Instrucciones
+# Ayudantia Itba — Instrucciones
 
 ## ¿Qué hace el programa?
 
@@ -59,8 +59,8 @@ python main.py
 ## Uso paso a paso
 
 ### Paso 1 — Cargar archivos
-- **📁 Cargar Video…** → seleccioná tu `.avi` (o `.mp4`, `.mkv`, etc.)
-- **📁 Cargar Audio…** → seleccioná tu `.wav`  
+- **Cargar Video…** → seleccioná tu `.avi` (o `.mp4`, `.mkv`, etc.)
+- **Cargar Audio…** → seleccioná tu `.wav`  
   Los archivos pueden estar en cualquier carpeta.
 
 ### Paso 2 — Configurar el espectrograma
@@ -77,7 +77,7 @@ python main.py
 | **Contraste** | Realza las diferencias de intensidad |
 | **Brillo** | Aclara u oscurece la imagen |
 
-Apretá **👁 Ver espectrograma** para previsualizar. Podés ajustar y volver a previsualizar cuantas veces quieras.
+Apretá **Ver espectrograma** para previsualizar. Podés ajustar y volver a previsualizar cuantas veces quieras.
 
 ### Paso 3 — Generar el video
 
@@ -88,7 +88,7 @@ Apretá **👁 Ver espectrograma** para previsualizar. Podés ajustar y volver a
 | **Posición** | Dónde se coloca el espectrograma en el frame |
 | **Offset audio (s)** | Si el audio y el video no empiezan al mismo tiempo, ajustá aquí (positivo = audio empieza después) |
 
-Apretá **🎬 Generar Video**. Aparece una barra de progreso. Cuando termina, el archivo queda guardado en la ruta elegida.
+Apretá **Generar Video**. Aparece una barra de progreso. Cuando termina, el archivo queda guardado en la ruta elegida.
 
 ---
 

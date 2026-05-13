@@ -41,8 +41,8 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("Rat USV Analyzer")
-    app.setOrganizationName("NeuroLab")
+    app.setApplicationName("Ayudantia Itba")
+    app.setOrganizationName("ITBA")
     app.setStyle("Fusion")
     app.setPalette(_dark_palette(app))
 
