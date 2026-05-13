@@ -1,48 +1,52 @@
-# ── Frontend ──────────────────────────────────────
-node_modules
-dist
-dist-ssr
-*.local
+# ── Entorno virtual ───────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
 
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
-# ── Backend (Python) ──────────────────────────────
-.venv
-backend/.venv
-backend/__pycache__
-backend/**/__pycache__
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 
-# ── Datos / audio ─────────────────────────────────
+# ── Archivos de datos (videos y audios propios del experimento) ───────────────
+*.avi
+*.mp4
+*.mkv
+*.mov
+*.wmv
 *.wav
-*.mp3
 *.flac
+*.aif
+*.aiff
 *.ogg
 
-# ── OS ────────────────────────────────────────────
+# ── Outputs generados por el programa ─────────────────────────────────────────
+salida.*
+output.*
+*.png
+*.csv
+
+# ── Distribución / build ──────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+*.egg
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.user
+
+# ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# ── Editores ──────────────────────────────────────
-.vscode/*
-!.vscode/extensions.json
-.idea
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# ── Misc ──────────────────────────────────────────
-.env
-.env.*
+# ── Logs y temporales ─────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak

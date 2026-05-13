@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "PowerShell(& \"C:\\\\Users\\\\lucas\\\\Desktop\\\\Analisis-de-espectograma\\\\backend\\\\.venv\\\\Scripts\\\\python.exe\" -m pip show uvicorn 2>&1)"
-    ]
-  }
-}
