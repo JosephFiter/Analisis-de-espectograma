@@ -98,6 +98,13 @@ export default function App() {
   const [detailOffset, setDetailOffset] = useState<number | null>(null)
   const [detailError, setDetailError] = useState<string | null>(null)
 
+  const [videoDragging, setVideoDragging] = useState(false)
+  const [videoLoading, setVideoLoading] = useState(false)
+  const [videoError, setVideoError] = useState<string | null>(null)
+  const videoFileRef = useRef<File | null>(null)
+  const [videoFileName, setVideoFileName] = useState<string | null>(null)
+  const videoInputRef = useRef<HTMLInputElement>(null)
+
   const inputRef = useRef<HTMLInputElement>(null)
   const fileRef = useRef<File | null>(null)
   const metaRef = useRef<SpectrogramMeta | null>(null)
@@ -309,6 +316,46 @@ export default function App() {
     if (file) processFile(file)
   }, [processFile])
 
+  const handleVideoExport = useCallback(async () => {
+    const vf = videoFileRef.current
+    const wf = fileRef.current
+    if (!vf || !wf) return
+    const cfg = configRef.current
+    setVideoLoading(true)
+    setVideoError(null)
+
+    const body = new FormData()
+    body.append('video', vf)
+    body.append('wav', wf)
+    body.append('max_duration', String(cfg.overviewDuration))
+    body.append('fmax_khz', String(cfg.fmaxKhz))
+    body.append('vmin_db', String(cfg.vminDb))
+
+    try {
+      const res = await fetch('http://localhost:8000/video/overlay', { method: 'POST', body })
+      if (!res.ok) {
+        const detail = await res.json().then((j: { detail: string }) => j.detail).catch(() => res.statusText)
+        throw new Error(detail)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const cd = res.headers.get('Content-Disposition')
+      const match = cd?.match(/filename="(.+)"/)
+      const filename = match?.[1] ?? `${vf.name.replace(/\.[^.]+$/, '')}_espectrograma.mp4`
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setVideoError((e as Error).message)
+    } finally {
+      setVideoLoading(false)
+    }
+  }, [])
+
   return (
     <>
       <header id="app-header">
@@ -428,6 +475,68 @@ export default function App() {
                   draggable={false}
                 />
               )}
+            </div>
+          </section>
+        </>
+      )}
+
+      {imageUrl && meta && (
+        <>
+          <div className="ticks" />
+          <section id="video-export">
+            <div className="meta-bar">
+              <span><strong>Exportar al video</strong></span>
+              <span style={{ color: 'var(--text)', fontSize: 13 }}>
+                Subí el video original para incrustar el espectrograma debajo
+              </span>
+            </div>
+            <div className="video-export-body">
+              <div
+                className={['drop-zone video-drop', videoDragging && 'dragging', videoLoading && 'loading'].filter(Boolean).join(' ')}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  setVideoDragging(false)
+                  const f = e.dataTransfer.files[0]
+                  if (f) { videoFileRef.current = f; setVideoFileName(f.name); setVideoError(null) }
+                }}
+                onDragOver={(e) => { e.preventDefault(); setVideoDragging(true) }}
+                onDragLeave={() => setVideoDragging(false)}
+                onClick={() => !videoLoading && videoInputRef.current?.click()}
+                role="button"
+                tabIndex={0}
+                aria-label="Subir archivo de video"
+                onKeyDown={(e) => e.key === 'Enter' && !videoLoading && videoInputRef.current?.click()}
+              >
+                <input
+                  ref={videoInputRef}
+                  type="file"
+                  accept=".mp4,.avi,.mov,.mkv,.webm"
+                  hidden
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) { videoFileRef.current = f; setVideoFileName(f.name); setVideoError(null) }
+                    e.target.value = ''
+                  }}
+                />
+                {videoLoading ? <Spinner text="Generando video…" /> : (
+                  <>
+                    <UploadIcon />
+                    {videoFileName
+                      ? <p className="video-selected">{videoFileName}</p>
+                      : <p>Arrastrá el video o hacé click para seleccionar</p>
+                    }
+                    <span className="hint">Formatos: .mp4 · .avi · .mov · .mkv · .webm</span>
+                  </>
+                )}
+              </div>
+              <button
+                className="btn-video-export"
+                disabled={!videoFileName || videoLoading}
+                onClick={handleVideoExport}
+              >
+                ↓ Generar y descargar video
+              </button>
+              {videoError && <p className="error-msg">{videoError}</p>}
             </div>
           </section>
         </>
