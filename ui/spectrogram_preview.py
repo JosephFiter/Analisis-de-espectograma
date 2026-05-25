@@ -142,14 +142,20 @@ class SpectrogramPreview(QWidget):
 
             m   = int(t) // 60
             sec = t - m * 60
-            lbl = (f"{m}:{sec:04.1f}" if t_end >= 60 else f"{t:.2f}s")
+            if t_end >= 60:
+                lbl = f"{m}:{sec:04.1f}"
+            elif t_end >= 1.0:
+                lbl = f"{t:.2f}s"
+            else:
+                lbl = f"{t*1000:.0f}ms"
             tw  = fm.horizontalAdvance(lbl)
             p.setPen(light)
             p.drawText(x - tw // 2, cr.bottom() + self.MB - 4, lbl)
 
         # "s" / "mm:ss" x-axis title
+        x_unit = "ms" if t_end < 1.0 else "seg"
         p.setPen(QColor(140, 140, 140))
         p.drawText(
             QRect(cr.right() - 30, cr.bottom() + 4, 36, 16),
-            Qt.AlignRight, "seg",
+            Qt.AlignRight, x_unit,
         )

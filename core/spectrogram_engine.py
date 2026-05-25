@@ -18,6 +18,9 @@ class SpectrogramSettings:
     invert: bool = False
     contrast: float = 1.0
     brightness: float = 0.0
+    threshold_mode: bool = False
+    threshold_db: float = -40.0
+    per_channel_norm: bool = False
 
 
 class SpectrogramEngine:
@@ -69,21 +72,28 @@ class SpectrogramEngine:
         if progress_cb:
             progress_cb(65)
 
+        if settings.per_channel_norm:
+            # Subtract per-frequency-bin median: removes constant background.
+            # Clip to [0, ∞] so background = 0 and signals are positive values.
+            S_db -= np.median(S_db, axis=1, keepdims=True)
+            S_db = np.clip(S_db, 0, None)
+
         return S_db.astype(np.float32), times, freqs.astype(np.float32)
 
     def render_to_rgba(self, S_db: np.ndarray,
                        settings: SpectrogramSettings,
                        progress_cb=None, abort_flag=None) -> np.ndarray:
         """Returns RGBA uint8 array, shape (H, W, 4), low freq at bottom."""
-        span = settings.db_max - settings.db_min
-        if span == 0:
-            span = 1.0
-
-        S_clipped = np.clip(S_db, settings.db_min, settings.db_max)
-        S_norm = (S_clipped - settings.db_min) / span
-
-        gamma = 1.0 / max(settings.contrast, 0.01)
-        S_norm = np.clip(S_norm ** gamma + settings.brightness, 0.0, 1.0)
+        if settings.threshold_mode:
+            S_norm = (S_db >= settings.threshold_db).astype(np.float32)
+        else:
+            span = settings.db_max - settings.db_min
+            if span == 0:
+                span = 1.0
+            S_clipped = np.clip(S_db, settings.db_min, settings.db_max)
+            S_norm = (S_clipped - settings.db_min) / span
+            gamma = 1.0 / max(settings.contrast, 0.01)
+            S_norm = np.clip(S_norm ** gamma + settings.brightness, 0.0, 1.0)
 
         if settings.invert:
             S_norm = 1.0 - S_norm

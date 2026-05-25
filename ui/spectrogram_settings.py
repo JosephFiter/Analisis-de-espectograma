@@ -79,10 +79,12 @@ class SpectrogramSettingsDock(QDockWidget):
         self._cm_combo = QComboBox()
         for name in _COLORMAPS:
             self._cm_combo.addItem(name)
+        self._cm_combo.setCurrentText('gray')
         row.addWidget(self._cm_combo)
         g.addLayout(row)
 
         self._invert_cb = QCheckBox("Invert (white-on-black)")
+        self._invert_cb.setChecked(True)
         g.addWidget(self._invert_cb)
         layout.addWidget(grp)
 
@@ -114,7 +116,7 @@ class SpectrogramSettingsDock(QDockWidget):
         self._fmax_spin = QSpinBox()
         self._fmax_spin.setRange(100, 500000)
         self._fmax_spin.setSingleStep(1000)
-        self._fmax_spin.setValue(80000)
+        self._fmax_spin.setValue(120000)
         fmax_row.addWidget(self._fmax_spin)
         g.addLayout(fmax_row)
 

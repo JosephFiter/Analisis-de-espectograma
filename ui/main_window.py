@@ -25,8 +25,8 @@ from ui.spectrogram_preview import SpectrogramPreview
 
 _COLORMAPS = ['viridis', 'plasma', 'inferno', 'magma',
               'jet', 'hot', 'cool', 'gray', 'bone', 'copper']
-_FFT_SIZES = ['512', '1024', '2048', '4096']
-_HOP_LENS  = ['128', '256', '512', '1024']
+_FFT_SIZES = ['512', '1024', '2048', '4096', '8192', '16384', '32768']
+_HOP_LENS  = ['128', '256', '512', '1024', '2048', '4096', '8192']
 _POSITIONS = [
     ('Abajo-izquierda', 'bl'),
     ('Abajo-derecha',   'br'),
@@ -137,14 +137,32 @@ class MainWindow(QMainWindow):
         self._cm = QComboBox()
         for n in _COLORMAPS:
             self._cm.addItem(n)
+        self._cm.setCurrentText('gray')
         cm_row.addWidget(self._cm)
         gl2.addLayout(cm_row)
 
         self._invert = QCheckBox("Invertir colores")
+        self._invert.setChecked(True)
         gl2.addWidget(self._invert)
 
-        self._db_min = _LS("Min dB (piso de ruido):", -120, 0, -80, fmt="{} dB")
-        self._db_max = _LS("Max dB:", -60, 0, 0, fmt="{} dB")
+        self._thresh_cb = QCheckBox("Modo umbral (binario)")
+        gl2.addWidget(self._thresh_cb)
+
+        self._thresh_widget = QWidget()
+        tw = QHBoxLayout(self._thresh_widget)
+        tw.setContentsMargins(0, 0, 0, 0)
+        tw.addWidget(QLabel("Umbral:"))
+        self._thresh_spin = QSpinBox()
+        self._thresh_spin.setRange(-120, 0)
+        self._thresh_spin.setValue(-40)
+        self._thresh_spin.setSuffix(" dB")
+        tw.addWidget(self._thresh_spin)
+        gl2.addWidget(self._thresh_widget)
+        self._thresh_widget.setEnabled(False)
+        self._thresh_cb.toggled.connect(self._thresh_widget.setEnabled)
+
+        self._db_min = _LS("Min dB (piso de ruido):", -120, 0, -70, fmt="{} dB")
+        self._db_max = _LS("Max dB:", -60, 60, 0, fmt="{} dB")
         gl2.addWidget(self._db_min)
         gl2.addWidget(self._db_max)
 
@@ -162,25 +180,41 @@ class MainWindow(QMainWindow):
         self._fmax = QSpinBox()
         self._fmax.setRange(100, 500000)
         self._fmax.setSingleStep(1000)
-        self._fmax.setValue(80000)
+        self._fmax.setValue(120000)
         fmax_row.addWidget(self._fmax)
         gl2.addLayout(fmax_row)
 
         fft_row = QHBoxLayout()
-        fft_row.addWidget(QLabel("Ventana FFT:"))
+        _fft_lbl = QLabel("Ventana FFT:")
+        _fft_tip = (
+            "Cantidad de muestras por ventana FFT.\n"
+            "Mayor → mejor resolución en frecuencia, peor en tiempo.\n"
+            "Menor → mejor resolución en tiempo, peor en frecuencia."
+        )
+        _fft_lbl.setToolTip(_fft_tip)
+        fft_row.addWidget(_fft_lbl)
         self._fft = QComboBox()
         for s in _FFT_SIZES:
             self._fft.addItem(s)
-        self._fft.setCurrentText('2048')
+        self._fft.setCurrentText('512')
+        self._fft.setToolTip(_fft_tip)
         fft_row.addWidget(self._fft)
         gl2.addLayout(fft_row)
 
         hop_row = QHBoxLayout()
-        hop_row.addWidget(QLabel("Hop length:"))
+        _hop_lbl = QLabel("Hop length:")
+        _hop_tip = (
+            "Salto en muestras entre ventanas FFT consecutivas.\n"
+            "Menor → mayor densidad temporal, cómputo más lento.\n"
+            "Mayor → cómputo más rápido, menos detalle en el tiempo."
+        )
+        _hop_lbl.setToolTip(_hop_tip)
+        hop_row.addWidget(_hop_lbl)
         self._hop = QComboBox()
         for s in _HOP_LENS:
             self._hop.addItem(s)
-        self._hop.setCurrentText('512')
+        self._hop.setCurrentText('128')
+        self._hop.setToolTip(_hop_tip)
         hop_row.addWidget(self._hop)
         gl2.addLayout(hop_row)
 
@@ -188,6 +222,60 @@ class MainWindow(QMainWindow):
         self._brightness = _LS("Brillo:", -30, 30, 0, fmt="{}")
         gl2.addWidget(self._contrast)
         gl2.addWidget(self._brightness)
+
+        self._per_chan_cb = QCheckBox("Normaliz. por banda")
+        self._per_chan_cb.setToolTip(
+            "Elimina el ruido de fondo constante de cada franja de frecuencia.\n"
+            "Al activarse, ajusta automáticamente Min/Max dB para el nuevo rango."
+        )
+        self._per_chan_cb.toggled.connect(self._on_per_chan_toggled)
+        gl2.addWidget(self._per_chan_cb)
+
+        # ── Time range selector ────────────────────────────────────────────
+        self._range_cb = QCheckBox("Analizar lapso específico")
+        gl2.addWidget(self._range_cb)
+
+        self._range_widget = QWidget()
+        rv = QVBoxLayout(self._range_widget)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(3)
+
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(QLabel("Duración (s):"))
+        self._dur_spin = QDoubleSpinBox()
+        self._dur_spin.setRange(0.1, 7200.0)
+        self._dur_spin.setSingleStep(0.5)
+        self._dur_spin.setDecimals(1)
+        self._dur_spin.setValue(2.5)
+        dur_row.addWidget(self._dur_spin)
+        rv.addLayout(dur_row)
+
+        start_row = QHBoxLayout()
+        start_row.addWidget(QLabel("Inicio (s):"))
+        self._start_spin = QDoubleSpinBox()
+        self._start_spin.setRange(0.0, 7200.0)
+        self._start_spin.setSingleStep(1.0)
+        self._start_spin.setDecimals(1)
+        self._start_spin.setValue(0.0)
+        start_row.addWidget(self._start_spin)
+        rv.addLayout(start_row)
+
+        self._range_lbl = QLabel("0.0 s  →  2.0 s")
+        self._range_lbl.setStyleSheet("font-size:11px; color:#aaa;")
+        rv.addWidget(self._range_lbl)
+
+        self._start_sl = QSlider(Qt.Horizontal)
+        self._start_sl.setRange(0, 1000)
+        self._start_sl.setValue(0)
+        rv.addWidget(self._start_sl)
+
+        gl2.addWidget(self._range_widget)
+        self._range_widget.setEnabled(False)
+
+        self._range_cb.toggled.connect(self._range_widget.setEnabled)
+        self._start_sl.valueChanged.connect(self._update_range_lbl)
+        self._dur_spin.valueChanged.connect(self._update_range_lbl)
+        self._start_spin.valueChanged.connect(self._on_start_spin_changed)
 
         self._prev_btn = QPushButton("Ver espectrograma")
         self._prev_btn.setFixedHeight(30)
@@ -291,6 +379,9 @@ class MainWindow(QMainWindow):
             invert=self._invert.isChecked(),
             contrast=self._contrast.value() / 100.0,
             brightness=self._brightness.value() / 100.0,
+            threshold_mode=self._thresh_cb.isChecked(),
+            threshold_db=float(self._thresh_spin.value()),
+            per_channel_norm=self._per_chan_cb.isChecked(),
         )
 
     # ── File loading ──────────────────────────────────────────────────────────
@@ -355,8 +446,55 @@ class MainWindow(QMainWindow):
         nyq = engine.sr // 2
         self._fmax.setMaximum(nyq)
         if self._fmax.value() > nyq:
-            self._fmax.setValue(min(80000, nyq))
+            self._fmax.setValue(min(120000, nyq))
+        dur = engine.duration
+        self._dur_spin.setMaximum(dur)
+        self._dur_spin.setValue(min(self._dur_spin.value(), dur))
+        self._start_sl.setValue(0)
+        self._update_range_lbl()
         self._refresh_buttons()
+
+    def _on_per_chan_toggled(self, checked: bool):
+        if checked:
+            # After normalization values are in [0, ∞]: background=0, signals>0.
+            self._db_min.setValue(-5)
+            self._db_max.setValue(30)
+            # Threshold must also be in the new positive range.
+            self._thresh_spin.setRange(0, 60)
+            self._thresh_spin.setValue(5)
+        else:
+            self._db_min.setValue(-70)
+            self._db_max.setValue(0)
+            # Restore threshold to absolute dB range.
+            self._thresh_spin.setRange(-120, 0)
+            self._thresh_spin.setValue(-40)
+
+    def _update_range_lbl(self):
+        if self._audio_engine is None:
+            return
+        dur = self._dur_spin.value()
+        total = self._audio_engine.duration
+        max_start = max(0.0, total - dur)
+        start = (self._start_sl.value() / 1000.0) * max_start
+        end = min(start + dur, total)
+        self._range_lbl.setText(f"{start:.1f} s  →  {end:.1f} s")
+        self._start_spin.blockSignals(True)
+        self._start_spin.setMaximum(max_start)
+        self._start_spin.setValue(start)
+        self._start_spin.blockSignals(False)
+
+    def _on_start_spin_changed(self, val: float):
+        if self._audio_engine is None:
+            return
+        dur = self._dur_spin.value()
+        total = self._audio_engine.duration
+        max_start = max(0.0, total - dur)
+        slider_val = int((val / max_start) * 1000) if max_start > 0 else 0
+        self._start_sl.blockSignals(True)
+        self._start_sl.setValue(slider_val)
+        self._start_sl.blockSignals(False)
+        end = min(val + dur, total)
+        self._range_lbl.setText(f"{val:.1f} s  →  {end:.1f} s")
 
     def _refresh_buttons(self):
         has_audio = self._audio_engine is not None
@@ -376,8 +514,18 @@ class MainWindow(QMainWindow):
 
         self._preview.set_loading("Calculando espectrograma…")
 
+        if self._range_cb.isChecked():
+            start = self._start_spin.value()
+            dur = self._dur_spin.value()
+            sr = self._audio_engine.sr
+            s0 = int(start * sr)
+            s1 = min(int((start + dur) * sr), len(self._audio_engine.samples))
+            samples = self._audio_engine.samples[s0:s1]
+        else:
+            samples = self._audio_engine.samples
+
         worker = SpectrogramWorker(
-            self._audio_engine.samples,
+            samples,
             self._audio_engine.sr,
             self._settings(),
             self,
