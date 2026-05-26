@@ -77,11 +77,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Ayudantia Itba")
         self.resize(1380, 820)
 
-        self._audio_engine: AudioEngine = None
-        self._video_engine: VideoEngine = None
+        self._audio_engine:  AudioEngine = None
+        self._audio_engine2: AudioEngine = None
+        self._video_engine:  VideoEngine = None
         self._spec_rgba   = None    # numpy H×W×4 RGBA uint8
         self._spec_times  = None
         self._spec_freqs  = None
+        self._spec_rgba2  = None
+        self._spec_times2 = None
+        self._spec_freqs2 = None
         self._workers     = []
 
         self._build_ui()
@@ -123,8 +127,16 @@ class MainWindow(QMainWindow):
         self._aud_lbl.setWordWrap(True)
         self._aud_lbl.setStyleSheet("color:#888; font-size:11px;")
 
+        self._aud2_btn = QPushButton("Cargar Audio 2 (.wav)…")
+        self._aud2_btn.setFixedHeight(30)
+        self._aud2_btn.clicked.connect(self._open_audio2)
+        self._aud2_lbl = QLabel("Sin segundo audio (opcional)")
+        self._aud2_lbl.setWordWrap(True)
+        self._aud2_lbl.setStyleSheet("color:#888; font-size:11px;")
+
         gl1.addWidget(self._vid_btn);  gl1.addWidget(self._vid_lbl)
         gl1.addWidget(self._aud_btn);  gl1.addWidget(self._aud_lbl)
+        gl1.addWidget(self._aud2_btn); gl1.addWidget(self._aud2_lbl)
         lv.addWidget(g1)
 
         # Step 2 ─ spectrogram settings
@@ -231,7 +243,22 @@ class MainWindow(QMainWindow):
         self._per_chan_cb.toggled.connect(self._on_per_chan_toggled)
         gl2.addWidget(self._per_chan_cb)
 
-        # ── Time range selector ────────────────────────────────────────────
+        # ── Duración / ventana visible ─────────────────────────────────────
+        dur_row = QHBoxLayout()
+        dur_row.addWidget(QLabel("Duración visible (s):"))
+        self._dur_spin = QDoubleSpinBox()
+        self._dur_spin.setRange(0.1, 7200.0)
+        self._dur_spin.setSingleStep(0.5)
+        self._dur_spin.setDecimals(1)
+        self._dur_spin.setValue(2.5)
+        self._dur_spin.setToolTip(
+            "Segundos de audio visibles a la vez en la previsualización y el video.\n"
+            "También define el tamaño del lapso al usar 'Analizar lapso específico'."
+        )
+        dur_row.addWidget(self._dur_spin)
+        gl2.addLayout(dur_row)
+
+        # ── Lapso específico (opcional) ────────────────────────────────────
         self._range_cb = QCheckBox("Analizar lapso específico")
         gl2.addWidget(self._range_cb)
 
@@ -239,16 +266,6 @@ class MainWindow(QMainWindow):
         rv = QVBoxLayout(self._range_widget)
         rv.setContentsMargins(0, 0, 0, 0)
         rv.setSpacing(3)
-
-        dur_row = QHBoxLayout()
-        dur_row.addWidget(QLabel("Duración (s):"))
-        self._dur_spin = QDoubleSpinBox()
-        self._dur_spin.setRange(0.1, 7200.0)
-        self._dur_spin.setSingleStep(0.5)
-        self._dur_spin.setDecimals(1)
-        self._dur_spin.setValue(2.5)
-        dur_row.addWidget(self._dur_spin)
-        rv.addLayout(dur_row)
 
         start_row = QHBoxLayout()
         start_row.addWidget(QLabel("Inicio (s):"))
@@ -260,7 +277,7 @@ class MainWindow(QMainWindow):
         start_row.addWidget(self._start_spin)
         rv.addLayout(start_row)
 
-        self._range_lbl = QLabel("0.0 s  →  2.0 s")
+        self._range_lbl = QLabel("0.0 s  →  2.5 s")
         self._range_lbl.setStyleSheet("font-size:11px; color:#aaa;")
         rv.addWidget(self._range_lbl)
 
@@ -305,25 +322,6 @@ class MainWindow(QMainWindow):
         gl3.addWidget(self._size_sl)
         gl3.addWidget(self._height_sl)
 
-        win_row = QHBoxLayout()
-        win_row.addWidget(QLabel("Ventana visible (s):"))
-        self._window_spin = QDoubleSpinBox()
-        self._window_spin.setRange(0.5, 120.0)
-        self._window_spin.setSingleStep(0.5)
-        self._window_spin.setDecimals(1)
-        self._window_spin.setValue(5.0)
-        self._window_spin.setToolTip("Segundos de audio visibles a la vez en el video")
-        win_row.addWidget(self._window_spin)
-        gl3.addLayout(win_row)
-
-        pos_row = QHBoxLayout()
-        pos_row.addWidget(QLabel("Posición:"))
-        self._pos = QComboBox()
-        for label, key in _POSITIONS:
-            self._pos.addItem(label, key)
-        pos_row.addWidget(self._pos)
-        gl3.addLayout(pos_row)
-
         off_row = QHBoxLayout()
         off_row.addWidget(QLabel("Offset audio (s):"))
         self._offset = QDoubleSpinBox()
@@ -359,11 +357,80 @@ class MainWindow(QMainWindow):
         scroll.setFixedWidth(315)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # ── Right panel: spectrogram preview widget ────────────────────────
+        # ── Right panel: preview + player controls ────────────────────────
         self._preview = SpectrogramPreview()
+        self._preview.position_changed.connect(self._on_preview_pos)
+        self._preview.playback_ended.connect(self._on_playback_ended)
+
+        right_panel = QWidget()
+        rp = QVBoxLayout(right_panel)
+        rp.setContentsMargins(0, 0, 0, 0)
+        rp.setSpacing(0)
+        rp.addWidget(self._preview)
+
+        # Scrub slider
+        self._scrub_sl = QSlider(Qt.Horizontal)
+        self._scrub_sl.setRange(0, 10000)
+        self._scrub_sl.setValue(0)
+        self._scrub_sl.setFixedHeight(14)
+        self._scrub_sl.sliderMoved.connect(self._on_scrub)
+        rp.addWidget(self._scrub_sl)
+
+        # Controls bar
+        ctrl = QWidget()
+        ctrl.setFixedHeight(38)
+        cl = QHBoxLayout(ctrl)
+        cl.setContentsMargins(6, 4, 6, 4)
+        cl.setSpacing(6)
+
+        self._play_btn = QPushButton("▶  Play")
+        self._play_btn.setFixedSize(88, 28)
+        self._play_btn.clicked.connect(self._on_play_pause)
+
+        self._stop_btn = QPushButton("⏹  Stop")
+        self._stop_btn.setFixedSize(88, 28)
+        self._stop_btn.clicked.connect(self._on_player_stop)
+
+        _PLAYER_SPEEDS = [("0.25×", 0.25), ("0.5×", 0.5), ("1×", 1.0),
+                          ("2×", 2.0), ("4×", 4.0), ("8×", 8.0)]
+        self._player_speeds = [s for _, s in _PLAYER_SPEEDS]
+        spd_combo = QComboBox()
+        spd_combo.setFixedSize(70, 28)
+        for lbl, _ in _PLAYER_SPEEDS:
+            spd_combo.addItem(lbl)
+        spd_combo.setCurrentIndex(2)   # 1×
+        spd_combo.currentIndexChanged.connect(self._on_player_speed)
+        self._spd_combo = spd_combo
+
+        self._pos_spin = QDoubleSpinBox()
+        self._pos_spin.setRange(0.0, 7200.0)
+        self._pos_spin.setSingleStep(0.1)
+        self._pos_spin.setDecimals(2)
+        self._pos_spin.setFixedSize(82, 28)
+        self._pos_spin.setSuffix(" s")
+        self._pos_spin.setToolTip("Tiempo exacto al que ir")
+        self._pos_spin.valueChanged.connect(self._on_pos_spin_changed)
+
+        self._pos_total_lbl = QLabel("/ —")
+        self._pos_total_lbl.setStyleSheet("font-size:11px; color:#bbb;")
+
+        cl.addWidget(self._play_btn)
+        cl.addWidget(self._stop_btn)
+        cl.addSpacing(8)
+        cl.addWidget(QLabel("Vel:"))
+        cl.addWidget(spd_combo)
+        cl.addSpacing(8)
+        cl.addWidget(QLabel("Pos:"))
+        cl.addWidget(self._pos_spin)
+        cl.addWidget(self._pos_total_lbl)
+        cl.addStretch()
+        rp.addWidget(ctrl)
+
+        # Connect dur_spin → preview window size
+        self._dur_spin.valueChanged.connect(self._preview.set_window_sec)
 
         root.addWidget(scroll)
-        root.addWidget(self._preview)
+        root.addWidget(right_panel)
 
     # ── Settings snapshot ─────────────────────────────────────────────────────
 
@@ -454,6 +521,45 @@ class MainWindow(QMainWindow):
         self._update_range_lbl()
         self._refresh_buttons()
 
+    # ── Player controls ───────────────────────────────────────────────────────
+
+    def _on_play_pause(self):
+        if self._preview.is_playing():
+            self._preview.pause()
+            self._play_btn.setText("▶  Play")
+        else:
+            self._preview.play()
+            self._play_btn.setText("⏸  Pausa")
+
+    def _on_player_stop(self):
+        self._preview.stop()
+        self._play_btn.setText("▶  Play")
+
+    def _on_player_speed(self, idx: int):
+        self._preview.set_speed(self._player_speeds[idx])
+
+    def _on_scrub(self, val: int):
+        total = self._preview.total_duration()
+        if total > 0:
+            self._preview.set_pos((val / 10000.0) * total)
+
+    def _on_preview_pos(self, pos: float):
+        total = self._preview.total_duration()
+        self._pos_total_lbl.setText(f"/ {total:.2f}s")
+        self._pos_spin.blockSignals(True)
+        self._pos_spin.setValue(pos)
+        self._pos_spin.blockSignals(False)
+        if total > 0:
+            self._scrub_sl.blockSignals(True)
+            self._scrub_sl.setValue(int(pos / total * 10000))
+            self._scrub_sl.blockSignals(False)
+
+    def _on_pos_spin_changed(self, val: float):
+        self._preview.set_pos(val)
+
+    def _on_playback_ended(self):
+        self._play_btn.setText("▶  Play")
+
     def _on_per_chan_toggled(self, checked: bool):
         if checked:
             # After normalization values are in [0, ∞]: background=0, signals>0.
@@ -496,6 +602,36 @@ class MainWindow(QMainWindow):
         end = min(val + dur, total)
         self._range_lbl.setText(f"{val:.1f} s  →  {end:.1f} s")
 
+    # ── Audio 2 loading ───────────────────────────────────────────────────────
+
+    def _open_audio2(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir Audio 2", "",
+            "Audio (*.wav *.flac *.aif *.aiff);;Todos (*)"
+        )
+        if path:
+            self._load_audio2(path)
+
+    def _load_audio2(self, path: str):
+        dlg = self._prog_dlg("Cargando audio 2…")
+        worker = AudioLoadWorker(path, self)
+        worker.progress.connect(dlg.setValue)
+        worker.status.connect(self._status.showMessage)
+        worker.error.connect(lambda e: self._err("Error de audio 2", e))
+        worker.result.connect(self._on_audio2_loaded)
+        worker.finished.connect(dlg.close)
+        self._start(worker)
+        dlg.exec_()
+
+    def _on_audio2_loaded(self, engine: AudioEngine):
+        self._audio_engine2 = engine
+        name = os.path.basename(engine.path)
+        self._aud2_lbl.setText(
+            f"{name}\n{engine.sr} Hz · {engine.duration:.1f} s"
+        )
+        self._aud2_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
+        self._status.showMessage(f"Audio 2: {name}")
+
     def _refresh_buttons(self):
         has_audio = self._audio_engine is not None
         has_video = self._video_engine is not None
@@ -512,17 +648,19 @@ class MainWindow(QMainWindow):
             if isinstance(w, SpectrogramWorker):
                 w.abort()
 
+        # Reset second spectrogram until recomputed
+        self._spec_rgba2  = None
+        self._spec_times2 = None
+        self._spec_freqs2 = None
+
         self._preview.set_loading("Calculando espectrograma…")
 
-        if self._range_cb.isChecked():
-            start = self._start_spin.value()
-            dur = self._dur_spin.value()
-            sr = self._audio_engine.sr
-            s0 = int(start * sr)
-            s1 = min(int((start + dur) * sr), len(self._audio_engine.samples))
-            samples = self._audio_engine.samples[s0:s1]
-        else:
-            samples = self._audio_engine.samples
+        dur = self._dur_spin.value()
+        start = self._start_spin.value() if self._range_cb.isChecked() else 0.0
+        sr = self._audio_engine.sr
+        s0 = int(start * sr)
+        s1 = min(int((start + dur) * sr), len(self._audio_engine.samples))
+        samples = self._audio_engine.samples[s0:s1]
 
         worker = SpectrogramWorker(
             samples,
@@ -542,9 +680,44 @@ class MainWindow(QMainWindow):
         self._spec_rgba  = rgba
         self._spec_times = times
         self._spec_freqs = freqs
+        self._preview.set_window_sec(self._dur_spin.value())
         self._preview.set_spectrogram(qimage, times, freqs)
+        self._preview.clear_spectrogram2()   # reset until spec2 is ready
+        dur = self._preview.total_duration()
+        self._pos_spin.setMaximum(dur if dur > 0 else 7200.0)
+        self._status.showMessage("Espectrograma listo.")
+        self._refresh_buttons()
+
+        # If a second audio is loaded, compute its spectrogram with the same settings
+        if self._audio_engine2 is not None:
+            self._status.showMessage("Calculando espectrograma 2…")
+            dur2   = self._dur_spin.value()
+            start2 = self._start_spin.value() if self._range_cb.isChecked() else 0.0
+            sr2    = self._audio_engine2.sr
+            s0     = int(start2 * sr2)
+            s1     = min(int((start2 + dur2) * sr2), len(self._audio_engine2.samples))
+            samples2 = self._audio_engine2.samples[s0:s1]
+
+            worker2 = SpectrogramWorker(
+                samples2,
+                self._audio_engine2.sr,
+                self._settings(),
+                self,
+            )
+            worker2.progress.connect(
+                lambda p: self._status.showMessage(f"Calculando espectrograma 2… {p}%")
+            )
+            worker2.error.connect(lambda e: self._err("Error espectrograma 2", e))
+            worker2.result.connect(self._on_spec2_done)
+            self._start(worker2)
+
+    def _on_spec2_done(self, qimage: QImage, rgba, times, freqs, S_db):
+        self._spec_rgba2  = rgba
+        self._spec_times2 = times
+        self._spec_freqs2 = freqs
+        self._preview.set_spectrogram2(qimage, times, freqs)
         self._status.showMessage(
-            "Espectrograma listo. Podés ajustar y volver a previsualizar."
+            "Ambos espectrogramas listos. Podés ajustar y volver a previsualizar."
         )
         self._refresh_buttons()
 
@@ -574,10 +747,13 @@ class MainWindow(QMainWindow):
             if isinstance(w, RenderWorker):
                 w.abort()
 
-        # Get fmin/fmax from the settings used when the spectrogram was computed.
-        # Use the actual freq axis min/max (what librosa returned after filtering).
+        # Use actual freq axis min/max (what librosa returned after filtering).
         fmin = float(self._spec_freqs[0])  if self._spec_freqs is not None else float(self._fmin.value())
         fmax = float(self._spec_freqs[-1]) if self._spec_freqs is not None else float(self._fmax.value())
+
+        # Second spectrogram (optional)
+        fmin2 = float(self._spec_freqs2[0])  if self._spec_freqs2 is not None else None
+        fmax2 = float(self._spec_freqs2[-1]) if self._spec_freqs2 is not None else None
 
         worker = RenderWorker(
             video_path=self._video_engine.path,
@@ -591,10 +767,13 @@ class MainWindow(QMainWindow):
             fmax=fmax,
             overlay_fraction=self._size_sl.value() / 100.0,
             overlay_height_frac=self._height_sl.value() / 100.0,
-            position_key=self._pos.currentData(),
             offset_sec=self._offset.value(),
-            window_sec=self._window_spin.value(),
+            window_sec=self._dur_spin.value(),
             output_path=out_path,
+            spec_rgba2=self._spec_rgba2,
+            spec_duration2=self._audio_engine2.duration if self._audio_engine2 else None,
+            fmin2=fmin2,
+            fmax2=fmax2,
             parent=self,
         )
 
