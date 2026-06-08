@@ -18,7 +18,7 @@ from core.spectrogram_engine import SpectrogramSettings
 from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
 from workers.spectrogram_worker import SpectrogramWorker
-from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow
+from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow, capture_windows
 
 from ui.spectrogram_preview import SpectrogramPreview
 
@@ -635,6 +635,7 @@ class MainWindow(QMainWindow):
         # ── Ventana del video ──────────────────────────────────────────────
         self._video_win = VideoPlayerWindow(self._video_engine)
         self._video_win.closed.connect(lambda: setattr(self, '_video_win', None))
+        self._video_win.capture_requested.connect(self._do_capture)
 
         # ── Ventana espectrograma 1 ────────────────────────────────────────
         title1 = "Espectrograma — Audio 1"
@@ -677,6 +678,27 @@ class MainWindow(QMainWindow):
         self._status.showMessage(
             f"{n} ventanas abiertas. Reproducí el video para sincronizar los espectrogramas."
         )
+
+    # ── Captura de pantalla ───────────────────────────────────────────────────
+
+    def _do_capture(self):
+        """Graba video + espectrogramas y los guarda combinados en capturas/."""
+        wins = [w for w in (self._video_win, self._spec_win, self._spec_win2)
+                if w is not None]
+        if not wins:
+            return
+
+        folder = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         '..', 'capturas')
+        )
+        path = capture_windows(wins, folder)
+        if path:
+            self._status.showMessage(
+                f"✓ Captura guardada: capturas/{os.path.basename(path)}"
+            )
+        else:
+            self._status.showMessage("Error al guardar la captura.")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -3,7 +3,11 @@ Dual-window live player:
   VideoPlayerWindow     → muestra los frames del video con controles de reproducción.
   SpecPlayerWindow      → muestra el espectrograma scrolleando en sincronia con el video.
   _ScrollingSpecWidget  → widget interno con lógica de ventana deslizante.
+  capture_windows()     → graba todas las ventanas abiertas y las combina en un PNG.
 """
+import os
+from datetime import datetime
+
 import numpy as np
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
@@ -244,9 +248,11 @@ class VideoPlayerWindow(QWidget):
     """
     Ventana independiente con reproductor de video.
     Emite sync_position(float) en cada tick para que SpecPlayerWindow lo siga.
+    Emite capture_requested() cuando el usuario presiona el botón Capturar.
     """
-    closed        = pyqtSignal()
-    sync_position = pyqtSignal(float)   # tiempo en segundos del video
+    closed            = pyqtSignal()
+    sync_position     = pyqtSignal(float)   # tiempo en segundos del video
+    capture_requested = pyqtSignal()        # solicitud de captura de pantalla
 
     _SPEEDS = [("0.25×", 0.25), ("0.5×", 0.5), ("1×", 1.0),
                ("2×",    2.0),  ("4×",   4.0)]
@@ -318,11 +324,21 @@ class VideoPlayerWindow(QWidget):
         self._pos_lbl = QLabel(f"0.00s / {self._duration:.2f}s")
         self._pos_lbl.setStyleSheet("font-size:11px; color:#bbb;")
 
+        self._cap_btn = QPushButton("📸  Capturar")
+        self._cap_btn.setFixedSize(110, 28)
+        self._cap_btn.setToolTip(
+            "Guarda una captura con el video y los espectrogramas\n"
+            "en la carpeta  capturas/  del proyecto."
+        )
+        self._cap_btn.clicked.connect(self.capture_requested)
+
         ctrl.addWidget(self._play_btn)
         ctrl.addWidget(self._stop_btn)
         ctrl.addSpacing(8)
         ctrl.addWidget(QLabel("Vel:"))
         ctrl.addWidget(spd)
+        ctrl.addSpacing(12)
+        ctrl.addWidget(self._cap_btn)
         ctrl.addStretch()
         ctrl.addWidget(self._pos_lbl)
         root.addLayout(ctrl)
@@ -379,3 +395,44 @@ class VideoPlayerWindow(QWidget):
         self._timer.stop()
         self.closed.emit()
         event.accept()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Captura de pantalla de todas las ventanas
+# ─────────────────────────────────────────────────────────────────────────────
+
+def capture_windows(windows: list, save_folder: str) -> str:
+    """
+    Graba cada ventana con QWidget.grab(), las apila verticalmente y guarda
+    el resultado como PNG en save_folder.
+
+    Parámetros
+    ----------
+    windows     : lista de QWidget (se ignoran los None)
+    save_folder : ruta de la carpeta donde guardar (se crea si no existe)
+
+    Retorna la ruta completa del archivo guardado, o None si no hay ventanas.
+    """
+    pixmaps = [w.grab() for w in windows if w is not None]
+    if not pixmaps:
+        return None
+
+    os.makedirs(save_folder, exist_ok=True)
+
+    total_w = max(pm.width()  for pm in pixmaps)
+    total_h = sum(pm.height() for pm in pixmaps)
+
+    combined = QPixmap(total_w, total_h)
+    combined.fill(QColor(17, 17, 17))
+
+    p = QPainter(combined)
+    y = 0
+    for pm in pixmaps:
+        p.drawPixmap(0, y, pm)
+        y += pm.height()
+    p.end()
+
+    ts   = datetime.now().strftime('%Y%m%d_%H%M%S')
+    path = os.path.join(save_folder, f'captura_{ts}.png')
+    combined.save(path)
+    return path

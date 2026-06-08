@@ -28,6 +28,7 @@ salida.*
 output.*
 *.png
 *.csv
+capturas/
 
 # ── Distribución / build ──────────────────────────────────────────────────────
 dist/
