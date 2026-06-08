@@ -18,7 +18,7 @@ from core.spectrogram_engine import SpectrogramSettings
 from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
 from workers.spectrogram_worker import SpectrogramWorker
-from workers.render_worker import RenderWorker
+from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow
 
 from ui.spectrogram_preview import SpectrogramPreview
 
@@ -82,7 +82,12 @@ class MainWindow(QMainWindow):
         self._spec_rgba   = None    # numpy H×W×4 RGBA uint8
         self._spec_times  = None
         self._spec_freqs  = None
+        self._spec_rgba2  = None    # segundo espectrograma (opcional)
+        self._spec_times2 = None
+        self._spec_freqs2 = None
         self._workers     = []
+        self._video_win   = None   # ventana independiente del video
+        self._spec_win    = None   # ventana independiente del espectrograma
 
         self._build_ui()
         self._status = QStatusBar()
@@ -284,45 +289,10 @@ class MainWindow(QMainWindow):
         gl2.addWidget(self._prev_btn)
         lv.addWidget(g2)
 
-        # Step 3 ─ generate
-        g3 = QGroupBox("Paso 3 — Generar video")
+        # Step 3 ─ abrir ventanas
+        g3 = QGroupBox("Paso 3 — Ver en ventanas")
         gl3 = QVBoxLayout(g3)
         gl3.setSpacing(5)
-
-        gl3.addWidget(QLabel("Archivo de salida:"))
-        of_row = QHBoxLayout()
-        self._out_edit = QLineEdit()
-        self._out_edit.setPlaceholderText("salida.mp4")
-        of_row.addWidget(self._out_edit)
-        self._browse_btn = QPushButton("…")
-        self._browse_btn.setFixedWidth(30)
-        self._browse_btn.clicked.connect(self._browse_output)
-        of_row.addWidget(self._browse_btn)
-        gl3.addLayout(of_row)
-
-        self._size_sl   = _LS("Ancho espectrograma:", 15, 80, 50, fmt="{}%")
-        self._height_sl = _LS("Alto espectrograma:",  10, 60, 35, fmt="{}%")
-        gl3.addWidget(self._size_sl)
-        gl3.addWidget(self._height_sl)
-
-        win_row = QHBoxLayout()
-        win_row.addWidget(QLabel("Ventana visible (s):"))
-        self._window_spin = QDoubleSpinBox()
-        self._window_spin.setRange(0.5, 120.0)
-        self._window_spin.setSingleStep(0.5)
-        self._window_spin.setDecimals(1)
-        self._window_spin.setValue(5.0)
-        self._window_spin.setToolTip("Segundos de audio visibles a la vez en el video")
-        win_row.addWidget(self._window_spin)
-        gl3.addLayout(win_row)
-
-        pos_row = QHBoxLayout()
-        pos_row.addWidget(QLabel("Posición:"))
-        self._pos = QComboBox()
-        for label, key in _POSITIONS:
-            self._pos.addItem(label, key)
-        pos_row.addWidget(self._pos)
-        gl3.addLayout(pos_row)
 
         off_row = QHBoxLayout()
         off_row.addWidget(QLabel("Offset audio (s):"))
@@ -331,24 +301,19 @@ class MainWindow(QMainWindow):
         self._offset.setSingleStep(0.1)
         self._offset.setDecimals(2)
         self._offset.setValue(0.0)
+        self._offset.setToolTip(
+            "Diferencia de tiempo entre el inicio del video y el del audio.\n"
+            "Positivo → el audio empieza después que el video."
+        )
         off_row.addWidget(self._offset)
         gl3.addLayout(off_row)
 
-        self._gen_btn = QPushButton("Generar Video")
+        self._gen_btn = QPushButton("Abrir Ventanas")
         self._gen_btn.setFixedHeight(36)
         self._gen_btn.setStyleSheet("font-weight:bold; font-size:13px;")
         self._gen_btn.setEnabled(False)
-        self._gen_btn.clicked.connect(self._generate_video)
+        self._gen_btn.clicked.connect(self._open_dual_windows)
         gl3.addWidget(self._gen_btn)
-
-        self._progress = QProgressBar()
-        self._progress.setRange(0, 100)
-        self._progress.setVisible(False)
-        gl3.addWidget(self._progress)
-
-        self._prog_lbl = QLabel("")
-        self._prog_lbl.setStyleSheet("font-size:11px; color:#aaa;")
-        gl3.addWidget(self._prog_lbl)
 
         lv.addWidget(g3)
         lv.addStretch()
@@ -548,79 +513,55 @@ class MainWindow(QMainWindow):
         )
         self._refresh_buttons()
 
-    # ── Generate video ────────────────────────────────────────────────────────
+    # ── Abrir ventanas duales ─────────────────────────────────────────────────
 
-    def _browse_output(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Guardar video como", "salida.mp4",
-            "MP4 (*.mp4);;AVI (*.avi)"
-        )
-        if path:
-            self._out_edit.setText(path)
-
-    def _generate_video(self):
+    def _open_dual_windows(self):
         if self._spec_rgba is None:
             QMessageBox.information(self, "Sin espectrograma",
                                     "Primero presioná Ver espectrograma.")
             return
-        out_path = self._out_edit.text().strip()
-        if not out_path:
-            self._browse_output()
-            out_path = self._out_edit.text().strip()
-        if not out_path:
+        if self._video_engine is None:
+            QMessageBox.information(self, "Sin video",
+                                    "Primero cargá un video.")
             return
 
-        for w in list(self._workers):
-            if isinstance(w, RenderWorker):
-                w.abort()
+        # Cerrar ventanas previas si estaban abiertas
+        if self._video_win is not None:
+            try:
+                self._video_win.close()
+            except Exception:
+                pass
+        if self._spec_win is not None:
+            try:
+                self._spec_win.close()
+            except Exception:
+                pass
 
-        # Get fmin/fmax from the settings used when the spectrogram was computed.
-        # Use the actual freq axis min/max (what librosa returned after filtering).
-        fmin = float(self._spec_freqs[0])  if self._spec_freqs is not None else float(self._fmin.value())
-        fmax = float(self._spec_freqs[-1]) if self._spec_freqs is not None else float(self._fmax.value())
+        offset_sec  = self._offset.value()
+        window_sec  = self._dur_spin.value()
 
-        worker = RenderWorker(
-            video_path=self._video_engine.path,
-            frame_count=self._video_engine.frame_count,
-            fps=self._video_engine.fps,
-            width=self._video_engine.width,
-            height=self._video_engine.height,
-            spec_rgba=self._spec_rgba,
-            spec_duration=self._audio_engine.duration,
-            fmin=fmin,
-            fmax=fmax,
-            overlay_fraction=self._size_sl.value() / 100.0,
-            overlay_height_frac=self._height_sl.value() / 100.0,
-            position_key=self._pos.currentData(),
-            offset_sec=self._offset.value(),
-            window_sec=self._window_spin.value(),
-            output_path=out_path,
-            parent=self,
+        # Ventana del espectrograma
+        self._spec_win = SpecPlayerWindow(
+            spec_rgba   = self._spec_rgba,
+            spec_times  = self._spec_times,
+            spec_freqs  = self._spec_freqs,
+            window_sec  = window_sec,
+            offset_sec  = offset_sec,
+            spec_rgba2  = self._spec_rgba2,
+            spec_times2 = self._spec_times2,
+            spec_freqs2 = self._spec_freqs2,
         )
+        self._spec_win.closed.connect(lambda: setattr(self, '_spec_win', None))
 
-        self._progress.setVisible(True)
-        self._progress.setValue(0)
-        self._gen_btn.setEnabled(False)
-        self._prog_lbl.setText("Renderizando…")
+        # Ventana del video
+        self._video_win = VideoPlayerWindow(self._video_engine)
+        self._video_win.sync_position.connect(self._spec_win.receive_position)
+        self._video_win.closed.connect(lambda: setattr(self, '_video_win', None))
 
-        worker.progress.connect(self._progress.setValue)
-        worker.status.connect(self._prog_lbl.setText)
-        worker.error.connect(self._on_render_error)
-        worker.done.connect(self._on_render_done)
-        worker.finished.connect(lambda: self._gen_btn.setEnabled(True))
-        self._start(worker)
-
-    def _on_render_done(self, path: str):
-        self._progress.setValue(100)
-        self._prog_lbl.setText(f"Guardado: {os.path.basename(path)}")
-        self._status.showMessage(f"Video generado: {path}")
-        QMessageBox.information(self, "¡Listo!",
-                                f"Video generado exitosamente:\n\n{path}")
-
-    def _on_render_error(self, msg: str):
-        self._gen_btn.setEnabled(True)
-        self._prog_lbl.setText("Error al renderizar.")
-        self._err("Error al generar video", msg)
+        # Abrir ambas ventanas
+        self._video_win.show()
+        self._spec_win.show()
+        self._status.showMessage("Ventanas abiertas. Reproducí el video para sincronizar el espectrograma.")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -643,6 +584,11 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, title, msg)
 
     def closeEvent(self, event):
+        # Cerrar ventanas duales si están abiertas
+        if self._video_win is not None:
+            self._video_win.close()
+        if self._spec_win is not None:
+            self._spec_win.close()
         for w in list(self._workers):
             w.abort()
             w.quit()
