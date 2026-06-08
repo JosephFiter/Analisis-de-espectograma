@@ -77,8 +77,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Ayudantia Itba")
         self.resize(1380, 820)
 
-        self._audio_engine: AudioEngine = None
-        self._video_engine: VideoEngine = None
+        self._audio_engine:  AudioEngine = None
+        self._audio_engine2: AudioEngine = None
+        self._video_engine:  VideoEngine = None
         self._spec_rgba   = None    # numpy H×W×4 RGBA uint8
         self._spec_times  = None
         self._spec_freqs  = None
@@ -86,8 +87,10 @@ class MainWindow(QMainWindow):
         self._spec_times2 = None
         self._spec_freqs2 = None
         self._workers     = []
+        self._computing   = False  # True mientras hay workers de espectrograma corriendo
         self._video_win   = None   # ventana independiente del video
-        self._spec_win    = None   # ventana independiente del espectrograma
+        self._spec_win    = None   # ventana independiente del espectrograma 1
+        self._spec_win2   = None   # ventana independiente del espectrograma 2
 
         self._build_ui()
         self._status = QStatusBar()
@@ -121,15 +124,23 @@ class MainWindow(QMainWindow):
         self._vid_lbl.setWordWrap(True)
         self._vid_lbl.setStyleSheet("color:#888; font-size:11px;")
 
-        self._aud_btn = QPushButton("Cargar Audio (.wav)…")
+        self._aud_btn = QPushButton("Cargar Audio 1 (.wav)…")
         self._aud_btn.setFixedHeight(30)
         self._aud_btn.clicked.connect(self._open_audio)
-        self._aud_lbl = QLabel("Sin audio cargado")
+        self._aud_lbl = QLabel("Sin audio 1 cargado")
         self._aud_lbl.setWordWrap(True)
         self._aud_lbl.setStyleSheet("color:#888; font-size:11px;")
 
+        self._aud2_btn = QPushButton("Cargar Audio 2 (.wav)…")
+        self._aud2_btn.setFixedHeight(30)
+        self._aud2_btn.clicked.connect(self._open_audio2)
+        self._aud2_lbl = QLabel("Sin audio 2 (opcional)")
+        self._aud2_lbl.setWordWrap(True)
+        self._aud2_lbl.setStyleSheet("color:#888; font-size:11px;")
+
         gl1.addWidget(self._vid_btn);  gl1.addWidget(self._vid_lbl)
         gl1.addWidget(self._aud_btn);  gl1.addWidget(self._aud_lbl)
+        gl1.addWidget(self._aud2_btn); gl1.addWidget(self._aud2_lbl)
         lv.addWidget(g1)
 
         # Step 2 ─ spectrogram settings
@@ -419,6 +430,34 @@ class MainWindow(QMainWindow):
         self._update_range_lbl()
         self._refresh_buttons()
 
+    def _open_audio2(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir Audio 2", "",
+            "Audio (*.wav *.flac *.aif *.aiff);;Todos (*)"
+        )
+        if path:
+            self._load_audio2(path)
+
+    def _load_audio2(self, path: str):
+        dlg = self._prog_dlg("Cargando audio 2…")
+        worker = AudioLoadWorker(path, self)
+        worker.progress.connect(dlg.setValue)
+        worker.status.connect(self._status.showMessage)
+        worker.error.connect(lambda e: self._err("Error de audio 2", e))
+        worker.result.connect(self._on_audio2_loaded)
+        worker.finished.connect(dlg.close)
+        self._start(worker)
+        dlg.exec_()
+
+    def _on_audio2_loaded(self, engine: AudioEngine):
+        self._audio_engine2 = engine
+        name = os.path.basename(engine.path)
+        self._aud2_lbl.setText(
+            f"{name}\n{engine.sr} Hz · {engine.duration:.1f} s"
+        )
+        self._aud2_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
+        self._status.showMessage(f"Audio 2: {name}")
+
     def _on_per_chan_toggled(self, checked: bool):
         if checked:
             # After normalization values are in [0, ∞]: background=0, signals>0.
@@ -465,53 +504,109 @@ class MainWindow(QMainWindow):
         has_audio = self._audio_engine is not None
         has_video = self._video_engine is not None
         has_spec  = self._spec_rgba is not None
-        self._prev_btn.setEnabled(has_audio)
-        self._gen_btn.setEnabled(has_audio and has_video and has_spec)
+        self._prev_btn.setEnabled(has_audio and not self._computing)
+        self._gen_btn.setEnabled(has_audio and has_video and has_spec
+                                 and not self._computing)
 
     # ── Spectrogram ───────────────────────────────────────────────────────────
 
     def _run_spectrogram(self):
         if self._audio_engine is None:
             return
+
+        # Abortar workers previos
         for w in list(self._workers):
             if isinstance(w, SpectrogramWorker):
                 w.abort()
 
-        self._preview.set_loading("Calculando espectrograma…")
+        # Resetear resultados
+        self._spec_rgba   = None
+        self._spec_times  = None
+        self._spec_freqs  = None
+        self._spec_rgba2  = None
+        self._spec_times2 = None
+        self._spec_freqs2 = None
+        self._computing   = True
+        self._refresh_buttons()
+
+        n_total = 2 if self._audio_engine2 is not None else 1
+        self._preview.set_loading(
+            f"Calculando espectrograma 1/{n_total}…"
+        )
+        self._status.showMessage(f"Calculando espectrograma 1/{n_total}…")
 
         if self._range_cb.isChecked():
             start = self._start_spin.value()
-            dur = self._dur_spin.value()
-            sr = self._audio_engine.sr
-            s0 = int(start * sr)
-            s1 = min(int((start + dur) * sr), len(self._audio_engine.samples))
+            dur   = self._dur_spin.value()
+            sr    = self._audio_engine.sr
+            s0    = int(start * sr)
+            s1    = min(int((start + dur) * sr), len(self._audio_engine.samples))
             samples = self._audio_engine.samples[s0:s1]
         else:
             samples = self._audio_engine.samples
 
-        worker = SpectrogramWorker(
-            samples,
-            self._audio_engine.sr,
-            self._settings(),
-            self,
-        )
-        worker.progress.connect(
-            lambda p: self._status.showMessage(f"Calculando espectrograma… {p}%")
-        )
-        worker.status.connect(self._status.showMessage)
-        worker.error.connect(lambda e: self._err("Error espectrograma", e))
+        worker = SpectrogramWorker(samples, self._audio_engine.sr, self._settings(), self)
+        worker.progress.connect(self._on_spec1_progress)
+        worker.error.connect(self._on_spec1_error)
         worker.result.connect(self._on_spec_done)
         self._start(worker)
+
+    def _on_spec1_progress(self, p: int):
+        n_total = 2 if self._audio_engine2 is not None else 1
+        self._status.showMessage(f"Calculando espectrograma 1/{n_total}… {p}%")
+
+    def _on_spec1_error(self, msg: str):
+        self._computing = False
+        self._refresh_buttons()
+        self._err("Error espectrograma 1", msg)
 
     def _on_spec_done(self, qimage: QImage, rgba, times, freqs, S_db):
         self._spec_rgba  = rgba
         self._spec_times = times
         self._spec_freqs = freqs
         self._preview.set_spectrogram(qimage, times, freqs)
-        self._status.showMessage(
-            "Espectrograma listo. Podés ajustar y volver a previsualizar."
-        )
+
+        # Si hay segundo audio, calcularlo con los mismos ajustes
+        if self._audio_engine2 is not None:
+            self._status.showMessage("Espectrograma 1 listo. Calculando espectrograma 2/2…")
+
+            if self._range_cb.isChecked():
+                start = self._start_spin.value()
+                dur   = self._dur_spin.value()
+                sr2   = self._audio_engine2.sr
+                s0    = int(start * sr2)
+                s1    = min(int((start + dur) * sr2), len(self._audio_engine2.samples))
+                samples2 = self._audio_engine2.samples[s0:s1]
+            else:
+                samples2 = self._audio_engine2.samples
+
+            worker2 = SpectrogramWorker(samples2, self._audio_engine2.sr, self._settings(), self)
+            worker2.progress.connect(
+                lambda p: self._status.showMessage(f"Calculando espectrograma 2/2… {p}%")
+            )
+            worker2.error.connect(self._on_spec2_error)
+            worker2.result.connect(self._on_spec2_done)
+            self._start(worker2)
+        else:
+            # Solo hay un audio: listo
+            self._computing = False
+            self._refresh_buttons()
+            self._status.showMessage("Espectrograma listo. Podés abrir las ventanas.")
+
+    def _on_spec2_error(self, msg: str):
+        self._computing = False
         self._refresh_buttons()
+        self._err("Error espectrograma 2", msg)
+
+    def _on_spec2_done(self, qimage: QImage, rgba, times, freqs, S_db):
+        self._spec_rgba2  = rgba
+        self._spec_times2 = times
+        self._spec_freqs2 = freqs
+        self._computing   = False
+        self._refresh_buttons()
+        self._status.showMessage(
+            "Ambos espectrogramas listos ✓  Podés abrir las ventanas."
+        )
 
     # ── Abrir ventanas duales ─────────────────────────────────────────────────
 
@@ -525,43 +620,63 @@ class MainWindow(QMainWindow):
                                     "Primero cargá un video.")
             return
 
-        # Cerrar ventanas previas si estaban abiertas
-        if self._video_win is not None:
-            try:
-                self._video_win.close()
-            except Exception:
-                pass
-        if self._spec_win is not None:
-            try:
-                self._spec_win.close()
-            except Exception:
-                pass
+        # Cerrar ventanas previas
+        for attr in ('_video_win', '_spec_win', '_spec_win2'):
+            win = getattr(self, attr, None)
+            if win is not None:
+                try:
+                    win.close()
+                except Exception:
+                    pass
 
-        offset_sec  = self._offset.value()
-        window_sec  = self._dur_spin.value()
+        offset_sec = self._offset.value()
+        window_sec = self._dur_spin.value()
 
-        # Ventana del espectrograma
-        self._spec_win = SpecPlayerWindow(
-            spec_rgba   = self._spec_rgba,
-            spec_times  = self._spec_times,
-            spec_freqs  = self._spec_freqs,
-            window_sec  = window_sec,
-            offset_sec  = offset_sec,
-            spec_rgba2  = self._spec_rgba2,
-            spec_times2 = self._spec_times2,
-            spec_freqs2 = self._spec_freqs2,
-        )
-        self._spec_win.closed.connect(lambda: setattr(self, '_spec_win', None))
-
-        # Ventana del video
+        # ── Ventana del video ──────────────────────────────────────────────
         self._video_win = VideoPlayerWindow(self._video_engine)
-        self._video_win.sync_position.connect(self._spec_win.receive_position)
         self._video_win.closed.connect(lambda: setattr(self, '_video_win', None))
 
-        # Abrir ambas ventanas
+        # ── Ventana espectrograma 1 ────────────────────────────────────────
+        title1 = "Espectrograma — Audio 1"
+        if self._audio_engine is not None:
+            title1 += f"  ({os.path.basename(self._audio_engine.path)})"
+        self._spec_win = SpecPlayerWindow(
+            spec_rgba  = self._spec_rgba,
+            spec_times = self._spec_times,
+            spec_freqs = self._spec_freqs,
+            window_sec = window_sec,
+            offset_sec = offset_sec,
+            title      = title1,
+        )
+        self._spec_win.closed.connect(lambda: setattr(self, '_spec_win', None))
+        self._video_win.sync_position.connect(self._spec_win.receive_position)
+
+        # ── Ventana espectrograma 2 (solo si hay audio 2) ─────────────────
+        if self._spec_rgba2 is not None:
+            title2 = "Espectrograma — Audio 2"
+            if self._audio_engine2 is not None:
+                title2 += f"  ({os.path.basename(self._audio_engine2.path)})"
+            self._spec_win2 = SpecPlayerWindow(
+                spec_rgba  = self._spec_rgba2,
+                spec_times = self._spec_times2,
+                spec_freqs = self._spec_freqs2,
+                window_sec = window_sec,
+                offset_sec = offset_sec,
+                title      = title2,
+            )
+            self._spec_win2.closed.connect(lambda: setattr(self, '_spec_win2', None))
+            self._video_win.sync_position.connect(self._spec_win2.receive_position)
+
+        # ── Mostrar ventanas ───────────────────────────────────────────────
         self._video_win.show()
         self._spec_win.show()
-        self._status.showMessage("Ventanas abiertas. Reproducí el video para sincronizar el espectrograma.")
+        if self._spec_win2 is not None:
+            self._spec_win2.show()
+
+        n = 3 if self._spec_win2 is not None else 2
+        self._status.showMessage(
+            f"{n} ventanas abiertas. Reproducí el video para sincronizar los espectrogramas."
+        )
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -585,10 +700,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         # Cerrar ventanas duales si están abiertas
-        if self._video_win is not None:
-            self._video_win.close()
-        if self._spec_win is not None:
-            self._spec_win.close()
+        for win in (self._video_win, self._spec_win, self._spec_win2):
+            if win is not None:
+                try:
+                    win.close()
+                except Exception:
+                    pass
         for w in list(self._workers):
             w.abort()
             w.quit()

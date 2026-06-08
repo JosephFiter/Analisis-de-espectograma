@@ -33,11 +33,8 @@ class _ScrollingSpecWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pixmap     = None
-        self._pixmap2    = None
         self._times      = None
         self._freqs      = None
-        self._times2     = None
-        self._freqs2     = None
         self._pos_sec    = 0.0
         self._window_sec = 5.0
         self.setStyleSheet("background-color:#111;")
@@ -49,12 +46,6 @@ class _ScrollingSpecWidget(QWidget):
         self._pixmap = QPixmap.fromImage(qimage)
         self._times  = times
         self._freqs  = freqs
-        self.update()
-
-    def set_spectrogram2(self, qimage: QImage, times: np.ndarray, freqs: np.ndarray):
-        self._pixmap2 = QPixmap.fromImage(qimage)
-        self._times2  = times
-        self._freqs2  = freqs
         self.update()
 
     def set_window_sec(self, sec: float):
@@ -79,19 +70,7 @@ class _ScrollingSpecWidget(QWidget):
             p.drawText(self.rect(), Qt.AlignCenter, "Sin espectrograma")
             return
 
-        W = self.width()
-        H = self.height()
-
-        if self._pixmap2 is not None:
-            half = W // 2
-            self._draw_panel(p, 0, half,
-                             self._pixmap, self._times, self._freqs)
-            p.setPen(QPen(QColor(60, 60, 60), 1))
-            p.drawLine(half, 0, half, H)
-            self._draw_panel(p, half, W - half,
-                             self._pixmap2, self._times2, self._freqs2)
-        else:
-            self._draw_panel(p, 0, W, self._pixmap, self._times, self._freqs)
+        self._draw_panel(p, 0, self.width(), self._pixmap, self._times, self._freqs)
 
     def _draw_panel(self, p, panel_left, panel_width, pixmap, times, freqs):
         cr = QRect(
@@ -196,13 +175,13 @@ class SpecPlayerWindow(QWidget):
     closed = pyqtSignal()
 
     def __init__(self,
-                 spec_rgba,  spec_times,  spec_freqs,
+                 spec_rgba, spec_times, spec_freqs,
                  window_sec: float,
                  offset_sec: float = 0.0,
-                 spec_rgba2=None, spec_times2=None, spec_freqs2=None,
+                 title: str = "Espectrograma",
                  parent=None):
         super().__init__(parent, Qt.Window)
-        self.setWindowTitle("Espectrograma")
+        self.setWindowTitle(title)
         self.resize(900, 300)
         self._offset_sec = offset_sec
 
@@ -216,10 +195,6 @@ class SpecPlayerWindow(QWidget):
         engine = SpectrogramEngine()
         qimage = engine.rgba_to_qimage(spec_rgba)
         self._spec_widget.set_spectrogram(qimage, spec_times, spec_freqs)
-
-        if spec_rgba2 is not None:
-            qimage2 = engine.rgba_to_qimage(spec_rgba2)
-            self._spec_widget.set_spectrogram2(qimage2, spec_times2, spec_freqs2)
 
         layout.addWidget(self._spec_widget)
 
