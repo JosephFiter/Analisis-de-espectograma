@@ -343,6 +343,13 @@ class VideoPlayerWindow(QWidget):
         ctrl.addWidget(self._pos_lbl)
         root.addLayout(ctrl)
 
+    # ── API pública ──────────────────────────────────────────────────────────
+
+    @property
+    def current_pos(self) -> float:
+        """Posición actual de reproducción en segundos."""
+        return self._pos_sec
+
     # ── Lógica de reproducción ───────────────────────────────────────────────
 
     def _refresh_frame(self):

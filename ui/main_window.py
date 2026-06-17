@@ -1,4 +1,6 @@
 import os
+import csv
+from datetime import datetime
 import numpy as np
 
 from PyQt5.QtWidgets import (
@@ -688,17 +690,51 @@ class MainWindow(QMainWindow):
         if not wins:
             return
 
-        folder = os.path.normpath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         '..', 'capturas')
+        base = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
         )
-        path = capture_windows(wins, folder)
+        path = capture_windows(wins, os.path.join(base, 'capturas'))
         if path:
+            pos = self._video_win.current_pos if self._video_win is not None else 0.0
+            self._log_capture(pos, os.path.basename(path))
             self._status.showMessage(
                 f"✓ Captura guardada: capturas/{os.path.basename(path)}"
             )
         else:
             self._status.showMessage("Error al guardar la captura.")
+
+    def _log_capture(self, pos_sec: float, captura_filename: str):
+        """Agrega una fila al CSV de registros con los metadatos de la captura."""
+        base = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        )
+        reg_folder = os.path.join(base, 'registros')
+        os.makedirs(reg_folder, exist_ok=True)
+        csv_path = os.path.join(reg_folder, 'capturas.csv')
+
+        video_name = (os.path.basename(self._video_engine.path)
+                      if self._video_engine is not None else '')
+        audio1_name = (os.path.basename(self._audio_engine.path)
+                       if self._audio_engine is not None else '')
+        audio2_name = (os.path.basename(self._audio_engine2.path)
+                       if self._audio_engine2 is not None else '')
+
+        write_header = not os.path.exists(csv_path)
+        with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow([
+                    'fecha_hora', 'posicion_s',
+                    'video', 'audio_1', 'audio_2', 'archivo_captura',
+                ])
+            writer.writerow([
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                f'{pos_sec:.3f}',
+                video_name,
+                audio1_name,
+                audio2_name,
+                captura_filename,
+            ])
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
