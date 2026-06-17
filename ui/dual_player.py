@@ -85,8 +85,10 @@ class _ScrollingSpecWidget(QWidget):
         )
 
         total_t = float(times[-1]) if times is not None and len(times) > 0 else 1.0
-        t_start = self._pos_sec
-        t_end   = min(t_start + self._window_sec, total_t)
+        half    = self._window_sec / 2.0
+        t_start = max(0.0, self._pos_sec - half)
+        t_end   = min(total_t, t_start + self._window_sec)
+        t_start = max(0.0, t_end - self._window_sec)   # re-ancla si t_end tocó el techo
         win_dur = max(t_end - t_start, 1e-6)
 
         # Recortar la porción del pixmap correspondiente a la ventana visible
@@ -97,6 +99,12 @@ class _ScrollingSpecWidget(QWidget):
         scaled = slice_pix.scaled(cr.size(), Qt.IgnoreAspectRatio,
                                   Qt.SmoothTransformation)
         p.drawPixmap(cr.topLeft(), scaled)
+
+        # ── Línea roja del cursor (posición actual) ───────────────────────────
+        frac_pos = (self._pos_sec - t_start) / win_dur
+        x_cursor = cr.left() + int(frac_pos * cr.width())
+        p.setPen(QPen(QColor(220, 50, 50), 1))
+        p.drawLine(x_cursor, cr.top(), x_cursor, cr.bottom())
 
         if times is None or freqs is None:
             return
