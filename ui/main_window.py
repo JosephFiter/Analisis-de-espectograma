@@ -19,6 +19,7 @@ from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
 from workers.spectrogram_worker import SpectrogramWorker
 from workers.render_worker import RenderWorker
+from workers.detection_worker import DetectionWorker
 
 from ui.spectrogram_preview import SpectrogramPreview
 
@@ -77,6 +78,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Ayudantia Itba")
         self.resize(1380, 820)
 
+        self._usv_eventos    = []
+        self._spec_S_db      = None   # S_db del espectrograma visible (lo usamos para detección)
+        self._spec_samples   = None
+        self._spec_sr        = None
         self._audio_engine:  AudioEngine = None
         self._audio_engine2: AudioEngine = None
         self._video_engine:  VideoEngine = None
@@ -299,6 +304,19 @@ class MainWindow(QMainWindow):
         self._prev_btn.setEnabled(False)
         self._prev_btn.clicked.connect(self._run_spectrogram)
         gl2.addWidget(self._prev_btn)
+
+        self._detect_btn = QPushButton("Detectar USVs")
+        self._detect_btn.setFixedHeight(30)
+        self._detect_btn.setEnabled(False)
+        self._detect_btn.setStyleSheet("color:#ff9955; font-weight:bold;")
+        self._detect_btn.setToolTip(
+            "Detecta automáticamente vocalizaciones ultrasónicas en el audio cargado.\n"
+            "Los eventos aparecen como rectángulos rojos sobre el espectrograma."
+        )
+        self._detect_btn.clicked.connect(self._run_detection)
+        gl2.addWidget(self._detect_btn)
+
+
         lv.addWidget(g2)
 
         # Step 3 ─ generate
@@ -637,7 +655,48 @@ class MainWindow(QMainWindow):
         has_video = self._video_engine is not None
         has_spec  = self._spec_rgba is not None
         self._prev_btn.setEnabled(has_audio)
+        self._detect_btn.setEnabled(has_audio)
         self._gen_btn.setEnabled(has_audio and has_video and has_spec)
+
+    # ── Detection ─────────────────────────────────────────────────────────────
+
+    def _run_detection(self):
+        if self._spec_S_db is None or self._spec_times is None:
+            QMessageBox.information(self, "Sin espectrograma",
+                                    "Primero presioná Ver espectrograma.")
+            return
+
+        self._detect_btn.setEnabled(False)
+        self._status.showMessage("Detectando vocalizaciones ultrasónicas…")
+        self._preview.clear_eventos()
+
+        worker = DetectionWorker(
+            self._spec_S_db,
+            self._spec_times,
+            self._spec_freqs,
+            umbral_db=8.0,
+            parent=self,
+        )
+        worker.progress.connect(
+            lambda p: self._status.showMessage(f"Detectando USVs… {p}%")
+        )
+        worker.error.connect(lambda e: self._err("Error de detección", e))
+        worker.result.connect(self._on_detection_done)
+        worker.finished.connect(lambda: self._detect_btn.setEnabled(True))
+        self._start(worker)
+
+    def _on_detection_done(self, eventos: list):
+        self._usv_eventos = eventos
+        self._preview.set_eventos(eventos)
+        n = len(eventos)
+        if n == 0:
+            self._status.showMessage(
+                "No se detectaron USVs. Probá ajustar los parámetros del espectrograma."
+            )
+        else:
+            self._status.showMessage(
+                f"Se detectaron {n} vocalización{'es' if n != 1 else ''} (40-60 kHz + ~100 kHz simultáneas)."
+            )
 
     # ── Spectrogram ───────────────────────────────────────────────────────────
 
@@ -661,6 +720,8 @@ class MainWindow(QMainWindow):
         s0 = int(start * sr)
         s1 = min(int((start + dur) * sr), len(self._audio_engine.samples))
         samples = self._audio_engine.samples[s0:s1]
+        self._spec_samples = samples
+        self._spec_sr      = self._audio_engine.sr
 
         worker = SpectrogramWorker(
             samples,
@@ -680,6 +741,7 @@ class MainWindow(QMainWindow):
         self._spec_rgba  = rgba
         self._spec_times = times
         self._spec_freqs = freqs
+        self._spec_S_db  = S_db   # guardamos para la detección
         self._preview.set_window_sec(self._dur_spin.value())
         self._preview.set_spectrogram(qimage, times, freqs)
         self._preview.clear_spectrogram2()   # reset until spec2 is ready

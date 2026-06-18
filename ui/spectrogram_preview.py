@@ -2,7 +2,7 @@ import numpy as np
 from PyQt5.QtWidgets import QWidget, QSizePolicy
 from PyQt5.QtGui import (QPainter, QPixmap, QImage, QColor, QPen,
                           QFont, QFontMetrics)
-from PyQt5.QtCore import Qt, QRect, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QRect, QRectF, QTimer, pyqtSignal
 
 
 class SpectrogramPreview(QWidget):
@@ -26,6 +26,7 @@ class SpectrogramPreview(QWidget):
         self._pixmap2    = None
         self._times2     = None
         self._freqs2     = None
+        self._eventos    = []   # list[USVEvent]
         self._pos_sec    = 0.0
         self._window_sec = 5.0
         self._speed      = 1.0
@@ -67,8 +68,17 @@ class SpectrogramPreview(QWidget):
         self._freqs2  = None
         self.update()
 
+    def set_eventos(self, eventos: list):
+        self._eventos = eventos or []
+        self.update()
+
+    def clear_eventos(self):
+        self._eventos = []
+        self.update()
+
     def clear_preview(self):
         self.stop()
+        self._eventos = []
         self._pixmap  = None
         self._times   = None
         self._freqs   = None
@@ -269,3 +279,38 @@ class SpectrogramPreview(QWidget):
         p.setPen(QColor(140, 140, 140))
         p.drawText(QRect(cr.right() - 30, cr.bottom() + 4, 36, 16),
                    Qt.AlignRight, x_unit)
+
+        # ── Eventos USV detectados ─────────────────────────────────────────
+        if self._eventos:
+            fmin_f    = float(freqs[0])
+            fmax_f    = float(freqs[-1])
+            freq_span = fmax_f - fmin_f if fmax_f != fmin_f else 1.0
+
+            # Bandas fijas donde buscamos señal
+            BAND_LO_MIN = 40_000.0
+            BAND_HI_MAX = 120_000.0
+
+            pen_box = QPen(QColor(255, 80, 80), 2)
+
+            for ev in self._eventos:
+                if ev.fin_s < t_start or ev.inicio_s > t_end:
+                    continue
+
+                ev_t0 = max(ev.inicio_s, t_start)
+                ev_t1 = min(ev.fin_s,   t_end)
+                if ev_t1 <= ev_t0:
+                    continue
+
+                x0 = cr.left() + int((ev_t0 - t_start) / win_dur * cr.width())
+                x1 = cr.left() + int((ev_t1 - t_start) / win_dur * cr.width())
+                w  = max(2, x1 - x0)
+
+                # Dibujar línea vertical que abarca las dos bandas de interés
+                f0_clamp = max(BAND_LO_MIN, fmin_f)
+                f1_clamp = min(BAND_HI_MAX, fmax_f)
+                y_top    = cr.bottom() - int((f1_clamp - fmin_f) / freq_span * cr.height())
+                y_bot    = cr.bottom() - int((f0_clamp - fmin_f) / freq_span * cr.height())
+
+                p.setPen(pen_box)
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(x0, y_top, w, max(2, y_bot - y_top))
