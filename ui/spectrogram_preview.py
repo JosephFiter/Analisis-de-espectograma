@@ -6,6 +6,7 @@ from PyQt5.QtCore import Qt, QRect
 
 
 class SpectrogramPreview(QWidget):
+
     """
     Custom widget that shows a spectrogram with proper frequency (Y-axis)
     and time (X-axis) scales.  The image is always stretched to fill the
@@ -21,6 +22,7 @@ class SpectrogramPreview(QWidget):
         self._pixmap = None
         self._times  = None    # 1-D float array, seconds
         self._freqs  = None    # 1-D float array, Hz (after freq filtering)
+        self._usv_events = []  # List[USVEvent] para superponer rectángulos
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet("background-color:#111;")
         self._placeholder = (
@@ -50,6 +52,15 @@ class SpectrogramPreview(QWidget):
         self._times  = None
         self._freqs  = None
         self._placeholder = text
+        self.update()
+
+    def set_usv_events(self, events: list):
+        """Recibe una lista de USVEvent y los dibuja sobre el espectrograma."""
+        self._usv_events = events if events else []
+        self.update()
+
+    def clear_usv_events(self):
+        self._usv_events = []
         self.update()
 
     # ── Internal ──────────────────────────────────────────────────────────────
@@ -159,3 +170,26 @@ class SpectrogramPreview(QWidget):
             QRect(cr.right() - 30, cr.bottom() + 4, 36, 16),
             Qt.AlignRight, x_unit,
         )
+
+        # ── USV event rectangles ──────────────────────────────────────────────
+        if self._usv_events:
+            pen = QPen(QColor(220, 50, 50), 2)
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+
+            for ev in self._usv_events:
+                # Mapear tiempo → X en píxeles
+                x0 = cr.left() + int((ev.start_s / t_end) * cr.width())
+                x1 = cr.left() + int((ev.end_s   / t_end) * cr.width())
+                x1 = max(x1, x0 + 2)   # mínimo 2 px de ancho
+
+                # Mapear frecuencia → Y en píxeles (0 = top = fmax)
+                frange = fmax - fmin
+                if frange <= 0:
+                    continue
+                y_top    = cr.bottom() - int(((min(ev.fmax_hz, fmax) - fmin) / frange) * cr.height())
+                y_bottom = cr.bottom() - int(((max(ev.fmin_hz, fmin) - fmin) / frange) * cr.height())
+                y_top    = max(y_top,    cr.top())
+                y_bottom = min(y_bottom, cr.bottom())
+
+                p.drawRect(x0, y_top, x1 - x0, y_bottom - y_top)

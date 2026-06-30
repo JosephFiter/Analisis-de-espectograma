@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QProgressBar, QGroupBox, QSlider, QComboBox,
     QCheckBox, QSpinBox, QDoubleSpinBox, QLineEdit,
     QScrollArea, QSizePolicy, QStatusBar, QProgressDialog,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QDialogButtonBox,
 )
 from PyQt5.QtGui import QImage
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -16,10 +17,12 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from core.audio_engine import AudioEngine
 from core.video_engine import VideoEngine
 from core.spectrogram_engine import SpectrogramSettings
+from core.usv_detector import USVEvent
 
 from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
 from workers.spectrogram_worker import SpectrogramWorker
+from workers.usv_worker import USVWorker
 from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow, capture_windows
 
 from ui.spectrogram_preview import SpectrogramPreview
@@ -88,11 +91,13 @@ class MainWindow(QMainWindow):
         self._spec_rgba2  = None    # segundo espectrograma (opcional)
         self._spec_times2 = None
         self._spec_freqs2 = None
-        self._workers     = []
-        self._computing   = False  # True mientras hay workers de espectrograma corriendo
-        self._video_win   = None   # ventana independiente del video
-        self._spec_win    = None   # ventana independiente del espectrograma 1
-        self._spec_win2   = None   # ventana independiente del espectrograma 2
+        self._workers      = []
+        self._computing    = False  # True mientras hay workers de espectrograma corriendo
+        self._video_win    = None   # ventana independiente del video
+        self._spec_win     = None   # ventana independiente del espectrograma 1
+        self._spec_win2    = None   # ventana independiente del espectrograma 2
+        self._usv_events   = []     # últimos eventos USV detectados
+        self._usv_t_offset = 0.0   # offset de tiempo del lapso analizado
 
         self._build_ui()
         self._status = QStatusBar()
@@ -300,6 +305,17 @@ class MainWindow(QMainWindow):
         self._prev_btn.setEnabled(False)
         self._prev_btn.clicked.connect(self._run_spectrogram)
         gl2.addWidget(self._prev_btn)
+
+        self._usv_btn = QPushButton("Detectar USVs")
+        self._usv_btn.setFixedHeight(30)
+        self._usv_btn.setEnabled(False)
+        self._usv_btn.setToolTip(
+            "Detecta vocalizaciones ultrasónicas de rata en el audio cargado.\n"
+            "Bandas: 18–30 kHz (estrés ~22 kHz) y 45–100 kHz (juego ~50 kHz).\n"
+            "El ruido de ~40 kHz queda excluido automáticamente."
+        )
+        self._usv_btn.clicked.connect(self._run_usv_detection)
+        gl2.addWidget(self._usv_btn)
         lv.addWidget(g2)
 
         # Step 3 ─ abrir ventanas
@@ -507,6 +523,7 @@ class MainWindow(QMainWindow):
         has_video = self._video_engine is not None
         has_spec  = self._spec_rgba is not None
         self._prev_btn.setEnabled(has_audio and not self._computing)
+        self._usv_btn.setEnabled(has_audio and not self._computing)
         self._gen_btn.setEnabled(has_audio and has_video and has_spec
                                  and not self._computing)
 
@@ -528,7 +545,9 @@ class MainWindow(QMainWindow):
         self._spec_rgba2  = None
         self._spec_times2 = None
         self._spec_freqs2 = None
+        self._usv_events  = []
         self._computing   = True
+        self._preview.clear_usv_events()
         self._refresh_buttons()
 
         n_total = 2 if self._audio_engine2 is not None else 1
@@ -609,6 +628,80 @@ class MainWindow(QMainWindow):
         self._status.showMessage(
             "Ambos espectrogramas listos ✓  Podés abrir las ventanas."
         )
+
+    # ── Detección USV ─────────────────────────────────────────────────────────
+
+    def _run_usv_detection(self):
+        if self._audio_engine is None:
+            return
+
+        if self._range_cb.isChecked():
+            start    = self._start_spin.value()
+            dur      = self._dur_spin.value()
+            sr       = self._audio_engine.sr
+            s0       = int(start * sr)
+            s1       = min(int((start + dur) * sr), len(self._audio_engine.samples))
+            samples  = self._audio_engine.samples[s0:s1]
+            t_offset = start
+        else:
+            samples  = self._audio_engine.samples
+            t_offset = 0.0
+
+        self._usv_btn.setEnabled(False)
+        self._usv_btn.setText("Detectando…")
+        self._status.showMessage("Detectando USVs…")
+        self._preview.clear_usv_events()
+
+        worker = USVWorker(samples, self._audio_engine.sr, self)
+        worker.status.connect(self._status.showMessage)
+        worker.error.connect(self._on_usv_error)
+        worker.result.connect(lambda evts: self._on_usv_done(evts, t_offset))
+        worker.finished.connect(self._on_usv_finished)
+        self._start(worker)
+
+    def _on_usv_error(self, msg: str):
+        self._err("Error detección USV", msg)
+
+    def _on_usv_finished(self):
+        self._usv_btn.setEnabled(self._audio_engine is not None and not self._computing)
+        self._usv_btn.setText("Detectar USVs")
+
+    def _on_usv_done(self, events: list, t_offset: float):
+        self._usv_events   = events
+        self._usv_t_offset = t_offset
+        n = len(events)
+        self._status.showMessage(
+            f"Detección USV completa: {n} evento{'s' if n != 1 else ''} encontrado{'s' if n != 1 else ''}."
+        )
+        self._preview.set_usv_events(events)
+
+    def _export_usv_csv(self, events: list):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar CSV", "eventos_usv.csv",
+            "CSV (*.csv);;Todos (*)"
+        )
+        if not path:
+            return
+        try:
+            t_off = self._usv_t_offset
+            with open(path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'inicio_s', 'fin_s', 'duracion_ms',
+                    'freq_min_hz', 'freq_max_hz', 'peak_energy',
+                ])
+                for ev in events:
+                    writer.writerow([
+                        f"{ev.start_s + t_off:.4f}",
+                        f"{ev.end_s   + t_off:.4f}",
+                        f"{ev.duration_ms:.2f}",
+                        f"{ev.fmin_hz:.0f}",
+                        f"{ev.fmax_hz:.0f}",
+                        f"{ev.peak_energy:.6f}",
+                    ])
+            self._status.showMessage(f"CSV exportado: {os.path.basename(path)}")
+        except Exception as e:
+            self._err("Error al exportar", str(e))
 
     # ── Abrir ventanas duales ─────────────────────────────────────────────────
 
