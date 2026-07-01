@@ -674,6 +674,57 @@ class MainWindow(QMainWindow):
             f"Detección USV completa: {n} evento{'s' if n != 1 else ''} encontrado{'s' if n != 1 else ''}."
         )
         self._preview.set_usv_events(events)
+        if self._spec_win is not None:
+            self._spec_win.set_usv_events(events)
+
+        if events:
+            resp = QMessageBox.question(
+                self, "Guardar detección",
+                f"Se detectaron {n} evento{'s' if n != 1 else ''}.\n"
+                "¿Guardar en registros/registros_automaticos.csv?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+            )
+            if resp == QMessageBox.Yes:
+                self._save_usv_registro(events, t_offset)
+
+    def _save_usv_registro(self, events: list, t_offset: float):
+        """Agrega los eventos USV detectados a registros/registros_automaticos.csv."""
+        base = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        )
+        reg_folder = os.path.join(base, 'registros')
+        os.makedirs(reg_folder, exist_ok=True)
+        csv_path = os.path.join(reg_folder, 'registros_automaticos.csv')
+
+        audio_name = (os.path.basename(self._audio_engine.path)
+                      if self._audio_engine is not None else '')
+        fecha_hora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        write_header = not os.path.exists(csv_path)
+        try:
+            with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow([
+                        'fecha_hora', 'audio', 'inicio_s', 'fin_s', 'duracion_ms',
+                        'freq_min_hz', 'freq_max_hz', 'peak_energy',
+                    ])
+                for ev in events:
+                    writer.writerow([
+                        fecha_hora,
+                        audio_name,
+                        f"{ev.start_s + t_offset:.4f}",
+                        f"{ev.end_s   + t_offset:.4f}",
+                        f"{ev.duration_ms:.2f}",
+                        f"{ev.fmin_hz:.0f}",
+                        f"{ev.fmax_hz:.0f}",
+                        f"{ev.peak_energy:.6f}",
+                    ])
+            self._status.showMessage(
+                f"Registro guardado: registros/registros_automaticos.csv ({len(events)} eventos)"
+            )
+        except Exception as e:
+            self._err("Error al guardar registro", str(e))
 
     def _export_usv_csv(self, events: list):
         path, _ = QFileDialog.getSaveFileName(
@@ -746,6 +797,8 @@ class MainWindow(QMainWindow):
         )
         self._spec_win.closed.connect(lambda: setattr(self, '_spec_win', None))
         self._video_win.sync_position.connect(self._spec_win.receive_position)
+        if self._usv_events:
+            self._spec_win.set_usv_events(self._usv_events)
 
         # ── Ventana espectrograma 2 (solo si hay audio 2) ─────────────────
         if self._spec_rgba2 is not None:

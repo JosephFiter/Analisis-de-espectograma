@@ -14,8 +14,8 @@ from PyQt5.QtWidgets import (
     QPushButton, QSlider, QLabel, QComboBox, QSizePolicy,
 )
 from PyQt5.QtGui import (QImage, QPixmap, QPainter, QColor, QPen,
-                         QFont, QFontMetrics)
-from PyQt5.QtCore import Qt, QTimer, QRect, pyqtSignal
+                         QFont, QFontMetrics, QPolygon)
+from PyQt5.QtCore import Qt, QTimer, QRect, QPoint, pyqtSignal
 
 from core.spectrogram_engine import SpectrogramEngine
 
@@ -32,7 +32,7 @@ class _ScrollingSpecWidget(QWidget):
     ML = 54   # margen izquierdo – etiquetas de frecuencia
     MB = 22   # margen inferior  – etiquetas de tiempo
     MR = 8    # margen derecho
-    MT = 6    # margen superior
+    MT = 16   # margen superior – deja lugar a las marcas de eventos USV
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -41,6 +41,7 @@ class _ScrollingSpecWidget(QWidget):
         self._freqs      = None
         self._pos_sec    = 0.0
         self._window_sec = 5.0
+        self._usv_events = []
         self.setStyleSheet("background-color:#111;")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -58,6 +59,10 @@ class _ScrollingSpecWidget(QWidget):
 
     def set_pos(self, sec: float):
         self._pos_sec = max(0.0, sec)
+        self.update()
+
+    def set_usv_events(self, events: list):
+        self._usv_events = events if events else []
         self.update()
 
     # ── Dibujo ───────────────────────────────────────────────────────────────
@@ -109,6 +114,27 @@ class _ScrollingSpecWidget(QWidget):
         if times is None or freqs is None:
             return
 
+        fmin = float(freqs[0])
+        fmax = float(freqs[-1])
+
+        # ── Eventos USV detectados (marca triangular arriba del panel) ─────────
+        if self._usv_events:
+            marker = QColor(220, 50, 50)
+            p.setPen(QPen(marker, 1))
+            p.setBrush(marker)
+            for ev in self._usv_events:
+                if ev.end_s < t_start or ev.start_s > t_end:
+                    continue
+                x0 = cr.left() + int(max(0.0, (ev.start_s - t_start) / win_dur) * cr.width())
+                x1 = cr.left() + int(min(1.0, (ev.end_s   - t_start) / win_dur) * cr.width())
+                xc = (x0 + x1) // 2
+                tri = QPolygon([
+                    QPoint(xc - 4, cr.top() - 10),
+                    QPoint(xc + 4, cr.top() - 10),
+                    QPoint(xc,     cr.top() - 2),
+                ])
+                p.drawPolygon(tri)
+
         # ── Ejes ─────────────────────────────────────────────────────────────
         font  = QFont("Courier", 8)
         p.setFont(font)
@@ -116,8 +142,6 @@ class _ScrollingSpecWidget(QWidget):
         gray  = QColor(185, 185, 185)
         light = QColor(210, 210, 210)
 
-        fmin    = float(freqs[0])
-        fmax    = float(freqs[-1])
         use_khz = fmax >= 1000
 
         # Borde Y e X
@@ -214,6 +238,10 @@ class SpecPlayerWindow(QWidget):
         """Llamado por VideoPlayerWindow en cada tick de reproducción."""
         spec_t = max(0.0, video_t - self._offset_sec)
         self._spec_widget.set_pos(spec_t)
+
+    def set_usv_events(self, events: list):
+        """Muestra los eventos USV detectados como rectángulos sobre el espectrograma."""
+        self._spec_widget.set_usv_events(events)
 
     def closeEvent(self, event):
         self.closed.emit()
