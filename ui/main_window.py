@@ -309,11 +309,6 @@ class MainWindow(QMainWindow):
         self._usv_btn = QPushButton("Detectar USVs")
         self._usv_btn.setFixedHeight(30)
         self._usv_btn.setEnabled(False)
-        self._usv_btn.setToolTip(
-            "Detecta vocalizaciones ultrasónicas de rata en el audio cargado.\n"
-            "Bandas: 18–30 kHz (estrés ~22 kHz) y 45–100 kHz (juego ~50 kHz).\n"
-            "El ruido de ~40 kHz queda excluido automáticamente."
-        )
         self._usv_btn.clicked.connect(self._run_usv_detection)
         gl2.addWidget(self._usv_btn)
         lv.addWidget(g2)
