@@ -18,7 +18,7 @@ class USVWorker(BaseWorker):
             self.status.emit("Detectando USVs…")
             self.progress.emit(5)
             detector = USVDetector()
-            events: list[USVEvent] = detector.detect(self._samples, self._sr)
+            events = detector.detect(self._samples, self._sr)
             self.progress.emit(100)
             self.result.emit(events)
         except Exception as exc:
