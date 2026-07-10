@@ -11,10 +11,10 @@ from datetime import datetime
 import numpy as np
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QSlider, QLabel, QComboBox, QSizePolicy,
+    QPushButton, QSlider, QLabel, QComboBox, QSizePolicy, QShortcut,
 )
 from PyQt5.QtGui import (QImage, QPixmap, QPainter, QColor, QPen,
-                         QFont, QFontMetrics, QPolygon)
+                         QFont, QFontMetrics, QPolygon, QKeySequence)
 from PyQt5.QtCore import Qt, QTimer, QRect, QPoint, pyqtSignal
 
 from core.spectrogram_engine import SpectrogramEngine
@@ -285,6 +285,13 @@ class VideoPlayerWindow(QWidget):
     Ventana independiente con reproductor de video.
     Emite sync_position(float) en cada tick para que SpecPlayerWindow lo siga.
     Emite capture_requested() cuando el usuario presiona el botón Capturar.
+
+    Navegación fina (para pararse justo encima de un ultrasonido):
+      ← / →              ±1 frame
+      Shift + ← / →      ±10 frames
+      Ctrl + ← / →       ±1 paso fino (ms, configurable)
+      Espacio            Play / Pausa
+      Inicio / Fin       Primer / último frame
     """
     closed            = pyqtSignal()
     sync_position     = pyqtSignal(float)   # tiempo en segundos del video
@@ -293,6 +300,10 @@ class VideoPlayerWindow(QWidget):
     _SPEEDS = [("0.25×", 0.25), ("0.5×", 0.5), ("1×", 1.0),
                ("2×",    2.0),  ("4×",   4.0)]
 
+    # Pasos finos sub-frame, en milisegundos. El video puede no cambiar de
+    # frame, pero el cursor del espectrograma sí se mueve.
+    _FINE_STEPS_MS = [1, 5, 10, 25, 50]
+
     def __init__(self, video_engine, parent=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("Video")
@@ -300,9 +311,11 @@ class VideoPlayerWindow(QWidget):
         self._ve       = video_engine
         self._fps      = max(video_engine.fps, 1.0)
         self._duration = video_engine.duration
+        self._nframes  = max(1, video_engine.frame_count)
         self._pos_sec  = 0.0
         self._playing  = False
         self._speed    = 1.0
+        self._fine_ms  = 10
 
         interval_ms = max(16, int(1000.0 / self._fps))
         self._timer = QTimer(self)
@@ -310,15 +323,16 @@ class VideoPlayerWindow(QWidget):
         self._timer.timeout.connect(self._tick)
 
         self._build_ui()
+        self._install_shortcuts()
 
         # Tamaño inicial proporcional al video
         vw, vh = video_engine.width, video_engine.height
         if vw > 0 and vh > 0:
-            target_w = min(max(vw, 400), 960)
-            target_h = int(target_w * vh / vw) + 60
+            target_w = min(max(vw, 460), 960)
+            target_h = int(target_w * vh / vw) + 96
             self.resize(target_w, target_h)
         else:
-            self.resize(640, 520)
+            self.resize(640, 560)
 
         self._refresh_frame()
 
@@ -332,10 +346,15 @@ class VideoPlayerWindow(QWidget):
         self._vw = _VideoWidget()
         root.addWidget(self._vw)
 
+        # Un paso del slider = un frame exacto.
         self._scrub = QSlider(Qt.Horizontal)
-        self._scrub.setRange(0, 10000)
+        self._scrub.setRange(0, self._nframes - 1)
+        self._scrub.setSingleStep(1)
+        self._scrub.setPageStep(max(1, int(self._fps)))   # una página ≈ 1 segundo
         self._scrub.setFixedHeight(14)
-        self._scrub.sliderMoved.connect(self._on_scrub)
+        self._scrub.setToolTip("Un paso del slider = un frame")
+        self._scrub.setFocusPolicy(Qt.NoFocus)   # las flechas son para el paso fino
+        self._scrub.valueChanged.connect(self._on_scrub)
         root.addWidget(self._scrub)
 
         ctrl = QHBoxLayout()
@@ -343,22 +362,26 @@ class VideoPlayerWindow(QWidget):
         self._play_btn = QPushButton("▶  Play")
         self._play_btn.setFixedSize(90, 28)
         self._play_btn.clicked.connect(self._toggle_play)
+        self._play_btn.setFocusPolicy(Qt.NoFocus)
 
         self._stop_btn = QPushButton("⏹  Stop")
         self._stop_btn.setFixedSize(90, 28)
         self._stop_btn.clicked.connect(self._stop)
+        self._stop_btn.setFocusPolicy(Qt.NoFocus)
 
         self._speed_vals = [s for _, s in self._SPEEDS]
         spd = QComboBox()
         spd.setFixedSize(70, 28)
+        spd.setFocusPolicy(Qt.NoFocus)
         for lbl, _ in self._SPEEDS:
             spd.addItem(lbl)
         spd.setCurrentIndex(2)
         spd.currentIndexChanged.connect(
             lambda i: setattr(self, '_speed', self._speed_vals[i]))
 
-        self._pos_lbl = QLabel(f"0.00s / {self._duration:.2f}s")
-        self._pos_lbl.setStyleSheet("font-size:11px; color:#bbb;")
+        self._pos_lbl = QLabel()
+        self._pos_lbl.setStyleSheet(
+            "font-family:Courier; font-size:11px; color:#bbb;")
 
         self._cap_btn = QPushButton("📸  Capturar")
         self._cap_btn.setFixedSize(110, 28)
@@ -367,6 +390,7 @@ class VideoPlayerWindow(QWidget):
             "en la carpeta  capturas/  del proyecto."
         )
         self._cap_btn.clicked.connect(self.capture_requested)
+        self._cap_btn.setFocusPolicy(Qt.NoFocus)
 
         ctrl.addWidget(self._play_btn)
         ctrl.addWidget(self._stop_btn)
@@ -379,6 +403,84 @@ class VideoPlayerWindow(QWidget):
         ctrl.addWidget(self._pos_lbl)
         root.addLayout(ctrl)
 
+        root.addLayout(self._build_nav_row())
+
+    def _build_nav_row(self) -> QHBoxLayout:
+        """Fila de navegación fina: pasos por frame y pasos sub-frame en ms."""
+        nav = QHBoxLayout()
+        nav.setSpacing(3)
+
+        frame_ms = 1000.0 / self._fps
+
+        def _btn(text, tip, slot, w=40):
+            b = QPushButton(text)
+            b.setFixedSize(w, 26)
+            b.setToolTip(tip)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setAutoRepeat(True)
+            b.setAutoRepeatDelay(400)
+            b.setAutoRepeatInterval(80)
+            b.clicked.connect(slot)
+            return b
+
+        nav.addWidget(QLabel("Frame:"))
+        nav.addWidget(_btn("⏪", f"−10 frames  (Shift+←)   ≈ {10*frame_ms:.0f} ms",
+                           lambda: self._seek_frames(-10)))
+        nav.addWidget(_btn("◀", f"−1 frame  (←)   ≈ {frame_ms:.1f} ms",
+                           lambda: self._seek_frames(-1)))
+        nav.addWidget(_btn("▶", f"+1 frame  (→)   ≈ {frame_ms:.1f} ms",
+                           lambda: self._seek_frames(+1)))
+        nav.addWidget(_btn("⏩", f"+10 frames  (Shift+→)   ≈ {10*frame_ms:.0f} ms",
+                           lambda: self._seek_frames(+10)))
+
+        nav.addSpacing(14)
+
+        fine_tip = (
+            "Paso fino sub-frame (Ctrl+← / Ctrl+→).\n"
+            "El video puede quedarse en el mismo frame, pero el cursor\n"
+            "del espectrograma se mueve con esta precisión."
+        )
+        fine_lbl = QLabel("Paso fino:")
+        fine_lbl.setToolTip(fine_tip)
+        nav.addWidget(fine_lbl)
+        nav.addWidget(_btn("«", "Retroceder un paso fino  (Ctrl+←)",
+                           lambda: self._seek_seconds(-self._fine_ms / 1000.0), 30))
+
+        self._fine_combo = QComboBox()
+        self._fine_combo.setFixedSize(70, 26)
+        self._fine_combo.setToolTip(fine_tip)
+        self._fine_combo.setFocusPolicy(Qt.NoFocus)
+        for ms in self._FINE_STEPS_MS:
+            self._fine_combo.addItem(f"{ms} ms")
+        self._fine_combo.setCurrentIndex(self._FINE_STEPS_MS.index(self._fine_ms))
+        self._fine_combo.currentIndexChanged.connect(
+            lambda i: setattr(self, '_fine_ms', self._FINE_STEPS_MS[i]))
+        nav.addWidget(self._fine_combo)
+
+        nav.addWidget(_btn("»", "Avanzar un paso fino  (Ctrl+→)",
+                           lambda: self._seek_seconds(+self._fine_ms / 1000.0), 30))
+
+        nav.addStretch()
+        return nav
+
+    def _install_shortcuts(self):
+        binds = [
+            (Qt.Key_Left,                     lambda: self._seek_frames(-1)),
+            (Qt.Key_Right,                    lambda: self._seek_frames(+1)),
+            (Qt.SHIFT + Qt.Key_Left,          lambda: self._seek_frames(-10)),
+            (Qt.SHIFT + Qt.Key_Right,         lambda: self._seek_frames(+10)),
+            (Qt.CTRL + Qt.Key_Left,           lambda: self._seek_seconds(-self._fine_ms / 1000.0)),
+            (Qt.CTRL + Qt.Key_Right,          lambda: self._seek_seconds(+self._fine_ms / 1000.0)),
+            (Qt.Key_Space,                    self._toggle_play),
+            (Qt.Key_Home,                     lambda: self._goto_frame(0)),
+            (Qt.Key_End,                      lambda: self._goto_frame(self._nframes - 1)),
+        ]
+        for key, slot in binds:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.WindowShortcut)
+            sc.setAutoRepeat(True)
+            sc.activated.connect(slot)
+
     # ── API pública ──────────────────────────────────────────────────────────
 
     @property
@@ -386,18 +488,55 @@ class VideoPlayerWindow(QWidget):
         """Posición actual de reproducción en segundos."""
         return self._pos_sec
 
+    @property
+    def current_frame(self) -> int:
+        """Índice del frame que se está mostrando."""
+        return self._frame_at(self._pos_sec)
+
+    # ── Navegación fina ──────────────────────────────────────────────────────
+
+    def _frame_at(self, sec: float) -> int:
+        idx = int(round(sec * self._fps))
+        return max(0, min(idx, self._nframes - 1))
+
+    def _seek_frames(self, delta: int):
+        """Salta ±delta frames desde el frame actual y pausa la reproducción."""
+        self._goto_frame(self.current_frame + delta)
+
+    def _goto_frame(self, idx: int):
+        idx = max(0, min(idx, self._nframes - 1))
+        self._seek_to(idx / self._fps)
+
+    def _seek_seconds(self, delta: float):
+        """Salta ±delta segundos: permite posiciones sub-frame."""
+        self._seek_to(self._pos_sec + delta)
+
+    def _seek_to(self, sec: float):
+        self._pause()
+        self._pos_sec = max(0.0, min(sec, self._duration))
+        self._refresh_frame()
+        self.sync_position.emit(self._pos_sec)
+
+    def _pause(self):
+        if self._playing:
+            self._playing = False
+            self._timer.stop()
+            self._play_btn.setText("▶  Play")
+
     # ── Lógica de reproducción ───────────────────────────────────────────────
 
     def _refresh_frame(self):
-        frame_idx = int(self._pos_sec * self._fps)
+        frame_idx = self._frame_at(self._pos_sec)
         frame = self._ve.get_frame(frame_idx)
         if frame is not None:
             self._vw.set_frame(frame)
-        self._pos_lbl.setText(f"{self._pos_sec:.2f}s / {self._duration:.2f}s")
-        if self._duration > 0:
-            self._scrub.blockSignals(True)
-            self._scrub.setValue(int(self._pos_sec / self._duration * 10000))
-            self._scrub.blockSignals(False)
+        self._pos_lbl.setText(
+            f"{self._pos_sec:7.3f}s / {self._duration:.2f}s"
+            f"   ·   frame {frame_idx}/{self._nframes - 1}"
+        )
+        self._scrub.blockSignals(True)
+        self._scrub.setValue(frame_idx)
+        self._scrub.blockSignals(False)
 
     def _tick(self):
         dt = self._timer.interval() / 1000.0 * self._speed
@@ -411,9 +550,7 @@ class VideoPlayerWindow(QWidget):
 
     def _toggle_play(self):
         if self._playing:
-            self._playing = False
-            self._timer.stop()
-            self._play_btn.setText("▶  Play")
+            self._pause()
         else:
             if self._pos_sec >= self._duration:
                 self._pos_sec = 0.0
@@ -422,15 +559,15 @@ class VideoPlayerWindow(QWidget):
             self._play_btn.setText("⏸  Pausa")
 
     def _stop(self):
-        self._timer.stop()
-        self._playing = False
-        self._play_btn.setText("▶  Play")
+        self._pause()
         self._pos_sec = 0.0
         self._refresh_frame()
         self.sync_position.emit(0.0)
 
-    def _on_scrub(self, val: int):
-        self._pos_sec = (val / 10000.0) * self._duration
+    def _on_scrub(self, frame_idx: int):
+        """El slider trabaja en unidades de frame."""
+        self._pause()
+        self._pos_sec = min(frame_idx / self._fps, self._duration)
         self._refresh_frame()
         self.sync_position.emit(self._pos_sec)
 
