@@ -18,6 +18,9 @@ from PyQt5.QtGui import (QImage, QPixmap, QPainter, QColor, QPen,
 from PyQt5.QtCore import Qt, QTimer, QRect, QPoint, pyqtSignal
 
 from core.spectrogram_engine import SpectrogramEngine
+from core.usv_detector import USVEvent
+from ui import markers
+from ui.markers import COLOR_AUTO, COLOR_MANUAL, draw_marker
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -32,16 +35,17 @@ class _ScrollingSpecWidget(QWidget):
     ML = 54   # margen izquierdo – etiquetas de frecuencia
     MB = 22   # margen inferior  – etiquetas de tiempo
     MR = 8    # margen derecho
-    MT = 16   # margen superior – deja lugar a las marcas de eventos USV
+    MT = markers.MARGEN_SUPERIOR   # lugar para las dos filas de flechas
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._pixmap     = None
-        self._times      = None
-        self._freqs      = None
-        self._pos_sec    = 0.0
-        self._window_sec = 5.0
-        self._usv_events = []
+        self._pixmap       = None
+        self._times        = None
+        self._freqs        = None
+        self._pos_sec      = 0.0
+        self._window_sec   = 5.0
+        self._usv_events   = []
+        self._manual_marks = []   # tiempos (s) relativos a este espectrograma
         self.setStyleSheet("background-color:#111;")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -63,6 +67,10 @@ class _ScrollingSpecWidget(QWidget):
 
     def set_usv_events(self, events: list):
         self._usv_events = events if events else []
+        self.update()
+
+    def set_manual_marks(self, marks: list):
+        self._manual_marks = list(marks) if marks else []
         self.update()
 
     # ── Dibujo ───────────────────────────────────────────────────────────────
@@ -117,23 +125,22 @@ class _ScrollingSpecWidget(QWidget):
         fmin = float(freqs[0])
         fmax = float(freqs[-1])
 
-        # ── Eventos USV detectados (marca triangular arriba del panel) ─────────
-        if self._usv_events:
-            marker = QColor(220, 50, 50)
-            p.setPen(QPen(marker, 1))
-            p.setBrush(marker)
-            for ev in self._usv_events:
-                if ev.end_s < t_start or ev.start_s > t_end:
-                    continue
-                x0 = cr.left() + int(max(0.0, (ev.start_s - t_start) / win_dur) * cr.width())
-                x1 = cr.left() + int(min(1.0, (ev.end_s   - t_start) / win_dur) * cr.width())
-                xc = (x0 + x1) // 2
-                tri = QPolygon([
-                    QPoint(xc - 4, cr.top() - 10),
-                    QPoint(xc + 4, cr.top() - 10),
-                    QPoint(xc,     cr.top() - 2),
-                ])
-                p.drawPolygon(tri)
+        # ── Eventos USV detectados (flecha roja, fila de abajo) ────────────────
+        y_auto = markers.base_fila(cr.top(), markers.FILA_AUTO)
+        for ev in self._usv_events:
+            if ev.end_s < t_start or ev.start_s > t_end:
+                continue
+            x0 = cr.left() + int(max(0.0, (ev.start_s - t_start) / win_dur) * cr.width())
+            x1 = cr.left() + int(min(1.0, (ev.end_s   - t_start) / win_dur) * cr.width())
+            draw_marker(p, (x0 + x1) // 2, y_auto, COLOR_AUTO)
+
+        # ── Marcas manuales (misma flecha en azul, fila de arriba) ─────────────
+        y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)
+        for t in self._manual_marks:
+            if t < t_start or t > t_end:
+                continue
+            x = cr.left() + int((t - t_start) / win_dur * cr.width())
+            draw_marker(p, x, y_manual, COLOR_MANUAL)
 
         # ── Ejes ─────────────────────────────────────────────────────────────
         font  = QFont("Courier", 8)
@@ -207,6 +214,14 @@ class SpecPlayerWindow(QWidget):
     """
     Ventana independiente que muestra el espectrograma scrolleando.
     Recibe la posición del video a través de receive_position().
+
+    Tiempos
+    -------
+    Las marcas y eventos que entran por set_usv_events()/set_manual_marks()
+    están en tiempo absoluto del audio.  `t0_sec` es el instante del audio al
+    que corresponde el borde izquierdo de esta imagen (0 salvo que se haya
+    analizado un lapso específico), y `offset_sec` es el corrimiento entre el
+    audio y el video.  Ambos se descuentan para pasar a coordenadas de imagen.
     """
     closed = pyqtSignal()
 
@@ -214,12 +229,14 @@ class SpecPlayerWindow(QWidget):
                  spec_rgba, spec_times, spec_freqs,
                  window_sec: float,
                  offset_sec: float = 0.0,
+                 t0_sec: float = 0.0,
                  title: str = "Espectrograma",
                  parent=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle(title)
         self.resize(900, 300)
         self._offset_sec = offset_sec
+        self._t0_sec     = t0_sec
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -236,12 +253,27 @@ class SpecPlayerWindow(QWidget):
 
     def receive_position(self, video_t: float):
         """Llamado por VideoPlayerWindow en cada tick de reproducción."""
-        spec_t = max(0.0, video_t - self._offset_sec)
+        spec_t = max(0.0, video_t - self._offset_sec - self._t0_sec)
         self._spec_widget.set_pos(spec_t)
 
     def set_usv_events(self, events: list):
-        """Muestra los eventos USV detectados como rectángulos sobre el espectrograma."""
-        self._spec_widget.set_usv_events(events)
+        """Eventos USV (tiempo absoluto del audio) → flechas rojas."""
+        self._spec_widget.set_usv_events([
+            USVEvent(
+                start_s=ev.start_s - self._t0_sec,
+                end_s=ev.end_s - self._t0_sec,
+                fmin_hz=ev.fmin_hz,
+                fmax_hz=ev.fmax_hz,
+                peak_energy=ev.peak_energy,
+            )
+            for ev in (events or [])
+        ])
+
+    def set_manual_marks(self, marks: list):
+        """Marcas manuales (tiempo absoluto del audio) → flechas azules."""
+        self._spec_widget.set_manual_marks(
+            [t - self._t0_sec for t in (marks or [])]
+        )
 
     def closeEvent(self, event):
         self.closed.emit()

@@ -4,6 +4,9 @@ from PyQt5.QtGui import (QPainter, QPixmap, QImage, QColor, QPen,
                           QFont, QFontMetrics)
 from PyQt5.QtCore import Qt, QRect
 
+from ui import markers
+from ui.markers import COLOR_AUTO, COLOR_MANUAL, draw_marker
+
 
 class SpectrogramPreview(QWidget):
 
@@ -15,14 +18,16 @@ class SpectrogramPreview(QWidget):
     ML = 54   # left margin  – frequency labels
     MB = 22   # bottom margin – time labels
     MR = 8    # right margin
-    MT = 6    # top margin
+    MT = markers.MARGEN_SUPERIOR   # lugar para las dos filas de flechas
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pixmap = None
         self._times  = None    # 1-D float array, seconds
         self._freqs  = None    # 1-D float array, Hz (after freq filtering)
-        self._usv_events = []  # List[USVEvent] para superponer rectángulos
+        self._usv_events = []  # List[USVEvent] en tiempo absoluto del audio
+        self._manual_marks = []  # tiempos (s) absolutos del audio
+        self._t0 = 0.0         # instante del audio en el borde izquierdo
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setStyleSheet("background-color:#111;")
         self._placeholder = (
@@ -54,13 +59,27 @@ class SpectrogramPreview(QWidget):
         self._placeholder = text
         self.update()
 
+    def set_time_origin(self, t0: float):
+        """Instante del audio que corresponde al borde izquierdo de la imagen."""
+        self._t0 = t0
+        self.update()
+
     def set_usv_events(self, events: list):
-        """Recibe una lista de USVEvent y los dibuja sobre el espectrograma."""
+        """USVEvent en tiempo absoluto del audio: rectángulos + flecha roja."""
         self._usv_events = events if events else []
         self.update()
 
     def clear_usv_events(self):
         self._usv_events = []
+        self.update()
+
+    def set_manual_marks(self, marks: list):
+        """Tiempos absolutos del audio marcados a mano: flecha azul."""
+        self._manual_marks = list(marks) if marks else []
+        self.update()
+
+    def clear_manual_marks(self):
+        self._manual_marks = []
         self.update()
 
     # ── Internal ──────────────────────────────────────────────────────────────
@@ -171,25 +190,43 @@ class SpectrogramPreview(QWidget):
             Qt.AlignRight, x_unit,
         )
 
-        # ── USV event rectangles ──────────────────────────────────────────────
-        if self._usv_events:
-            pen = QPen(QColor(220, 50, 50), 2)
-            p.setPen(pen)
+        if t_end <= 0:
+            return
+
+        def _x(t_abs: float) -> int:
+            """Tiempo absoluto del audio → X en píxeles."""
+            return cr.left() + int(((t_abs - self._t0) / t_end) * cr.width())
+
+        # ── Eventos automáticos: rectángulo + flecha roja (fila de abajo) ─────
+        y_auto = markers.base_fila(cr.top(), markers.FILA_AUTO)
+        for ev in self._usv_events:
+            if ev.end_s < self._t0 or ev.start_s > self._t0 + t_end:
+                continue
+
+            x0 = _x(ev.start_s)
+            x1 = max(_x(ev.end_s), x0 + 2)   # mínimo 2 px de ancho
+
+            # Mapear frecuencia → Y en píxeles (0 = top = fmax)
+            frange = fmax - fmin
+            if frange <= 0:
+                continue
+            y_top    = cr.bottom() - int(((min(ev.fmax_hz, fmax) - fmin) / frange) * cr.height())
+            y_bottom = cr.bottom() - int(((max(ev.fmin_hz, fmin) - fmin) / frange) * cr.height())
+            y_top    = max(y_top,    cr.top())
+            y_bottom = min(y_bottom, cr.bottom())
+
+            p.setPen(QPen(COLOR_AUTO, 2))
             p.setBrush(Qt.NoBrush)
+            p.drawRect(x0, y_top, x1 - x0, y_bottom - y_top)
+            draw_marker(p, (x0 + x1) // 2, y_auto, COLOR_AUTO)
 
-            for ev in self._usv_events:
-                # Mapear tiempo → X en píxeles
-                x0 = cr.left() + int((ev.start_s / t_end) * cr.width())
-                x1 = cr.left() + int((ev.end_s   / t_end) * cr.width())
-                x1 = max(x1, x0 + 2)   # mínimo 2 px de ancho
-
-                # Mapear frecuencia → Y en píxeles (0 = top = fmax)
-                frange = fmax - fmin
-                if frange <= 0:
-                    continue
-                y_top    = cr.bottom() - int(((min(ev.fmax_hz, fmax) - fmin) / frange) * cr.height())
-                y_bottom = cr.bottom() - int(((max(ev.fmin_hz, fmin) - fmin) / frange) * cr.height())
-                y_top    = max(y_top,    cr.top())
-                y_bottom = min(y_bottom, cr.bottom())
-
-                p.drawRect(x0, y_top, x1 - x0, y_bottom - y_top)
+        # ── Marcas manuales: línea + flecha azul (fila de arriba) ─────────────
+        y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)
+        for t in self._manual_marks:
+            if t < self._t0 or t > self._t0 + t_end:
+                continue
+            x = _x(t)
+            p.setPen(QPen(COLOR_MANUAL, 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawLine(x, cr.top(), x, cr.bottom())
+            draw_marker(p, x, y_manual, COLOR_MANUAL)

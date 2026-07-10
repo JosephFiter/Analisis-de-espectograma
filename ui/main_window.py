@@ -18,6 +18,7 @@ from core.audio_engine import AudioEngine
 from core.video_engine import VideoEngine
 from core.spectrogram_engine import SpectrogramSettings
 from core.usv_detector import USVEvent
+from core.registro import RegistroVideo, Marca, MANUAL, AUTOMATICO
 
 from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
@@ -96,8 +97,10 @@ class MainWindow(QMainWindow):
         self._video_win    = None   # ventana independiente del video
         self._spec_win     = None   # ventana independiente del espectrograma 1
         self._spec_win2    = None   # ventana independiente del espectrograma 2
-        self._usv_events   = []     # últimos eventos USV detectados
-        self._usv_t_offset = 0.0   # offset de tiempo del lapso analizado
+        self._usv_events   = []     # eventos USV, en tiempo absoluto del audio
+        self._manual_marks = []     # marcas manuales, en tiempo absoluto del audio
+        self._spec_t0      = 0.0    # instante del audio en el borde izq. del espectrograma
+        self._registro     = None   # RegistroVideo del video cargado
 
         self._build_ui()
         self._status = QStatusBar()
@@ -416,13 +419,63 @@ class MainWindow(QMainWindow):
     def _on_video_loaded(self, engine: VideoEngine):
         self._video_engine = engine
         name = os.path.basename(engine.path)
-        self._vid_lbl.setText(
-            f"{name}\n"
-            f"{engine.frame_count} frames · {engine.fps:.2f} fps · {engine.duration:.1f} s"
-        )
+        info = (f"{name}\n"
+                f"{engine.frame_count} frames · {engine.fps:.2f} fps · {engine.duration:.1f} s")
+
+        # Buscar el registro de este video y restaurar las marcas previas.
+        self._registro = RegistroVideo(engine.path, self._registro_folder())
+        self._usv_events   = []
+        self._manual_marks = []
+
+        if self._registro.existe:
+            self._manual_marks = [m.inicio_s
+                                  for m in self._registro.cargar_manuales()]
+            self._usv_events = [
+                USVEvent(
+                    start_s=m.inicio_s,
+                    end_s=m.fin_s,
+                    fmin_hz=m.freq_min_hz or 0.0,
+                    fmax_hz=m.freq_max_hz or 0.0,
+                    peak_energy=m.peak_energy or 0.0,
+                )
+                for m in self._registro.cargar_automaticas()
+            ]
+            n_man, n_aut = len(self._manual_marks), len(self._usv_events)
+            info += f"\n✓ ya analizado — {n_man} manual(es), {n_aut} automática(s)"
+
+            leidos = []
+            if n_man:
+                leidos.append(f"{n_man} de {self._registro.manual.nombre}")
+            if n_aut:
+                leidos.append(f"{n_aut} de {self._registro.auto.nombre}")
+            if leidos:
+                self._status.showMessage(
+                    "Video ya analizado: " + ", ".join(leidos))
+            else:
+                self._status.showMessage(f"Video: {name} (registro vacío)")
+        else:
+            self._status.showMessage(f"Video: {name} (sin análisis previo)")
+
+        self._vid_lbl.setText(info)
         self._vid_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
-        self._status.showMessage(f"Video: {name}")
+        self._refresh_marks()
         self._refresh_buttons()
+
+    def _registro_folder(self) -> str:
+        base = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        )
+        return os.path.join(base, 'registros')
+
+    def _refresh_marks(self):
+        """Vuelca las marcas actuales al preview y a las ventanas abiertas."""
+        self._preview.set_time_origin(self._spec_t0)
+        self._preview.set_usv_events(self._usv_events)
+        self._preview.set_manual_marks(self._manual_marks)
+        for win in (self._spec_win, self._spec_win2):
+            if win is not None:
+                win.set_usv_events(self._usv_events)
+                win.set_manual_marks(self._manual_marks)
 
     def _on_audio_loaded(self, engine: AudioEngine):
         self._audio_engine = engine
@@ -533,16 +586,15 @@ class MainWindow(QMainWindow):
             if isinstance(w, SpectrogramWorker):
                 w.abort()
 
-        # Resetear resultados
+        # Resetear resultados (las marcas se conservan: no dependen de los
+        # ajustes de dibujo, sólo del audio)
         self._spec_rgba   = None
         self._spec_times  = None
         self._spec_freqs  = None
         self._spec_rgba2  = None
         self._spec_times2 = None
         self._spec_freqs2 = None
-        self._usv_events  = []
         self._computing   = True
-        self._preview.clear_usv_events()
         self._refresh_buttons()
 
         n_total = 2 if self._audio_engine2 is not None else 1
@@ -558,8 +610,10 @@ class MainWindow(QMainWindow):
             s0    = int(start * sr)
             s1    = min(int((start + dur) * sr), len(self._audio_engine.samples))
             samples = self._audio_engine.samples[s0:s1]
+            self._spec_t0 = start
         else:
             samples = self._audio_engine.samples
+            self._spec_t0 = 0.0
 
         worker = SpectrogramWorker(samples, self._audio_engine.sr, self._settings(), self)
         worker.progress.connect(self._on_spec1_progress)
@@ -581,6 +635,7 @@ class MainWindow(QMainWindow):
         self._spec_times = times
         self._spec_freqs = freqs
         self._preview.set_spectrogram(qimage, times, freqs)
+        self._refresh_marks()
 
         # Si hay segundo audio, calcularlo con los mismos ajustes
         if self._audio_engine2 is not None:
@@ -645,7 +700,8 @@ class MainWindow(QMainWindow):
         self._usv_btn.setEnabled(False)
         self._usv_btn.setText("Detectando…")
         self._status.showMessage("Detectando USVs…")
-        self._preview.clear_usv_events()
+        self._usv_events = []
+        self._refresh_marks()
 
         worker = USVWorker(samples, self._audio_engine.sr, self)
         worker.status.connect(self._status.showMessage)
@@ -662,62 +718,75 @@ class MainWindow(QMainWindow):
         self._usv_btn.setText("Detectar USVs")
 
     def _on_usv_done(self, events: list, t_offset: float):
-        self._usv_events   = events
-        self._usv_t_offset = t_offset
-        n = len(events)
+        # El detector trabaja sobre el lapso recortado: pasar a tiempo absoluto.
+        self._usv_events = [
+            USVEvent(
+                start_s=ev.start_s + t_offset,
+                end_s=ev.end_s + t_offset,
+                fmin_hz=ev.fmin_hz,
+                fmax_hz=ev.fmax_hz,
+                peak_energy=ev.peak_energy,
+            )
+            for ev in events
+        ]
+        n = len(self._usv_events)
         self._status.showMessage(
             f"Detección USV completa: {n} evento{'s' if n != 1 else ''} encontrado{'s' if n != 1 else ''}."
         )
-        self._preview.set_usv_events(events)
-        if self._spec_win is not None:
-            self._spec_win.set_usv_events(events)
+        self._refresh_marks()
 
-        if events:
-            resp = QMessageBox.question(
-                self, "Guardar detección",
-                f"Se detectaron {n} evento{'s' if n != 1 else ''}.\n"
-                "¿Guardar en registros/registros_automaticos.csv?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        if not self._usv_events:
+            return
+
+        if self._registro is None:
+            QMessageBox.information(
+                self, "Sin video",
+                f"Se detectaron {n} evento{'s' if n != 1 else ''}, pero no hay un "
+                "video cargado.\nEl registro se guarda por video: cargá el video "
+                "y volvé a detectar."
             )
-            if resp == QMessageBox.Yes:
-                self._save_usv_registro(events, t_offset)
+            return
 
-    def _save_usv_registro(self, events: list, t_offset: float):
-        """Agrega los eventos USV detectados a registros/registros_automaticos.csv."""
-        base = os.path.normpath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        destino = self._registro.auto.nombre
+        resp = QMessageBox.question(
+            self, "Guardar detección",
+            f"Se detectaron {n} evento{'s' if n != 1 else ''}.\n"
+            f"¿Guardar en registros/{destino}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
         )
-        reg_folder = os.path.join(base, 'registros')
-        os.makedirs(reg_folder, exist_ok=True)
-        csv_path = os.path.join(reg_folder, 'registros_automaticos.csv')
+        if resp == QMessageBox.Yes:
+            self._save_usv_registro(self._usv_events)
 
+    def _save_usv_registro(self, events: list):
+        """Agrega los eventos USV detectados al registro CSV de este video."""
+        if self._registro is None:
+            return
         audio_name = (os.path.basename(self._audio_engine.path)
                       if self._audio_engine is not None else '')
         fecha_hora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        write_header = not os.path.exists(csv_path)
-        try:
-            with open(csv_path, 'a', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                if write_header:
-                    writer.writerow([
-                        'fecha_hora', 'audio', 'inicio_s', 'fin_s', 'duracion_ms',
-                        'freq_min_hz', 'freq_max_hz', 'peak_energy',
-                    ])
-                for ev in events:
-                    writer.writerow([
-                        fecha_hora,
-                        audio_name,
-                        f"{ev.start_s + t_offset:.4f}",
-                        f"{ev.end_s   + t_offset:.4f}",
-                        f"{ev.duration_ms:.2f}",
-                        f"{ev.fmin_hz:.0f}",
-                        f"{ev.fmax_hz:.0f}",
-                        f"{ev.peak_energy:.6f}",
-                    ])
-            self._status.showMessage(
-                f"Registro guardado: registros/registros_automaticos.csv ({len(events)} eventos)"
+        marcas = [
+            Marca(
+                tipo=AUTOMATICO,
+                inicio_s=ev.start_s,
+                fin_s=ev.end_s,
+                freq_min_hz=ev.fmin_hz,
+                freq_max_hz=ev.fmax_hz,
+                peak_energy=ev.peak_energy,
+                offset_audio_s=self._offset.value(),
+                video=self._registro.video_name,
+                audio=audio_name,
+                fecha_hora=fecha_hora,
             )
+            for ev in events
+        ]
+        try:
+            n_nuevas = self._registro.agregar(marcas)
+            repetidas = len(marcas) - n_nuevas
+            msg = (f"Registro guardado: registros/{self._registro.auto.nombre} "
+                   f"({n_nuevas} nueva{'s' if n_nuevas != 1 else ''}")
+            msg += f", {repetidas} ya estaban)" if repetidas else ")"
+            self._status.showMessage(msg)
         except Exception as e:
             self._err("Error al guardar registro", str(e))
 
@@ -729,7 +798,6 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            t_off = self._usv_t_offset
             with open(path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -738,8 +806,8 @@ class MainWindow(QMainWindow):
                 ])
                 for ev in events:
                     writer.writerow([
-                        f"{ev.start_s + t_off:.4f}",
-                        f"{ev.end_s   + t_off:.4f}",
+                        f"{ev.start_s:.4f}",
+                        f"{ev.end_s:.4f}",
                         f"{ev.duration_ms:.2f}",
                         f"{ev.fmin_hz:.0f}",
                         f"{ev.fmax_hz:.0f}",
@@ -788,12 +856,11 @@ class MainWindow(QMainWindow):
             spec_freqs = self._spec_freqs,
             window_sec = window_sec,
             offset_sec = offset_sec,
+            t0_sec     = self._spec_t0,
             title      = title1,
         )
         self._spec_win.closed.connect(lambda: setattr(self, '_spec_win', None))
         self._video_win.sync_position.connect(self._spec_win.receive_position)
-        if self._usv_events:
-            self._spec_win.set_usv_events(self._usv_events)
 
         # ── Ventana espectrograma 2 (solo si hay audio 2) ─────────────────
         if self._spec_rgba2 is not None:
@@ -806,10 +873,14 @@ class MainWindow(QMainWindow):
                 spec_freqs = self._spec_freqs2,
                 window_sec = window_sec,
                 offset_sec = offset_sec,
+                t0_sec     = self._spec_t0,
                 title      = title2,
             )
             self._spec_win2.closed.connect(lambda: setattr(self, '_spec_win2', None))
             self._video_win.sync_position.connect(self._spec_win2.receive_position)
+
+        # Volcar las marcas ya conocidas a las ventanas recién creadas
+        self._refresh_marks()
 
         # ── Mostrar ventanas ───────────────────────────────────────────────
         self._video_win.show()
@@ -825,7 +896,10 @@ class MainWindow(QMainWindow):
     # ── Captura de pantalla ───────────────────────────────────────────────────
 
     def _do_capture(self):
-        """Graba video + espectrogramas y los guarda combinados en capturas/."""
+        """
+        Marca manualmente el instante actual: guarda la captura combinada en
+        capturas/, lo anota en el registro del video y dibuja la flecha azul.
+        """
         wins = [w for w in (self._video_win, self._spec_win, self._spec_win2)
                 if w is not None]
         if not wins:
@@ -835,47 +909,48 @@ class MainWindow(QMainWindow):
             os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
         )
         path = capture_windows(wins, os.path.join(base, 'capturas'))
-        if path:
-            pos = self._video_win.current_pos if self._video_win is not None else 0.0
-            self._log_capture(pos, os.path.basename(path))
-            self._status.showMessage(
-                f"✓ Captura guardada: capturas/{os.path.basename(path)}"
-            )
-        else:
+        if not path:
             self._status.showMessage("Error al guardar la captura.")
+            return
 
-    def _log_capture(self, pos_sec: float, captura_filename: str):
-        """Agrega una fila al CSV de registros con los metadatos de la captura."""
-        base = os.path.normpath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        pos_video = self._video_win.current_pos if self._video_win is not None else 0.0
+        audio_t   = max(0.0, pos_video - self._offset.value())
+
+        self._manual_marks.append(audio_t)
+        self._manual_marks.sort()
+        self._refresh_marks()
+
+        guardado = self._log_marca_manual(pos_video, audio_t, os.path.basename(path))
+        self._status.showMessage(
+            f"✓ Marca en {audio_t:.3f}s · capturas/{os.path.basename(path)}"
+            + (f" · registros/{guardado}" if guardado else "")
         )
-        reg_folder = os.path.join(base, 'registros')
-        os.makedirs(reg_folder, exist_ok=True)
-        csv_path = os.path.join(reg_folder, 'capturas.csv')
 
-        video_name = (os.path.basename(self._video_engine.path)
-                      if self._video_engine is not None else '')
-        audio1_name = (os.path.basename(self._audio_engine.path)
-                       if self._audio_engine is not None else '')
-        audio2_name = (os.path.basename(self._audio_engine2.path)
-                       if self._audio_engine2 is not None else '')
+    def _log_marca_manual(self, pos_video: float, audio_t: float,
+                          captura_filename: str) -> str:
+        """Anota la marca manual en el registro CSV de este video."""
+        if self._registro is None:
+            return ''
 
-        write_header = not os.path.exists(csv_path)
-        with open(csv_path, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            if write_header:
-                writer.writerow([
-                    'fecha_hora', 'posicion_s',
-                    'video', 'audio_1', 'audio_2', 'archivo_captura',
-                ])
-            writer.writerow([
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                f'{pos_sec:.3f}',
-                video_name,
-                audio1_name,
-                audio2_name,
-                captura_filename,
-            ])
+        audio_name = (os.path.basename(self._audio_engine.path)
+                      if self._audio_engine is not None else '')
+        marca = Marca(
+            tipo=MANUAL,
+            inicio_s=audio_t,
+            fin_s=audio_t,
+            posicion_video_s=pos_video,
+            offset_audio_s=self._offset.value(),
+            video=self._registro.video_name,
+            audio=audio_name,
+            captura=captura_filename,
+            fecha_hora=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        )
+        try:
+            self._registro.agregar([marca])
+            return self._registro.manual.nombre
+        except Exception as e:
+            self._err("Error al guardar registro", str(e))
+            return ''
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
