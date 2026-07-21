@@ -20,7 +20,7 @@ from PyQt5.QtCore import Qt, QTimer, QRect, QPoint, pyqtSignal
 from core.spectrogram_engine import SpectrogramEngine
 from core.usv_detector import USVEvent
 from ui import markers
-from ui.markers import COLOR_AUTO, COLOR_MANUAL, draw_marker
+from ui.markers import COLOR_AUTO, COLOR_MANUAL, MANUAL_COLORS, draw_marker
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,6 +70,7 @@ class _ScrollingSpecWidget(QWidget):
         self.update()
 
     def set_manual_marks(self, marks: list):
+        """marks: lista de tuplas (tiempo_s, QColor)."""
         self._manual_marks = list(marks) if marks else []
         self.update()
 
@@ -134,13 +135,13 @@ class _ScrollingSpecWidget(QWidget):
             x1 = cr.left() + int(min(1.0, (ev.end_s   - t_start) / win_dur) * cr.width())
             draw_marker(p, (x0 + x1) // 2, y_auto, COLOR_AUTO)
 
-        # ── Marcas manuales (misma flecha en azul, fila de arriba) ─────────────
+        # ── Marcas manuales (flecha con el color de su tipo, fila de arriba) ──
         y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)
-        for t in self._manual_marks:
+        for t, color in self._manual_marks:
             if t < t_start or t > t_end:
                 continue
             x = cr.left() + int((t - t_start) / win_dur * cr.width())
-            draw_marker(p, x, y_manual, COLOR_MANUAL)
+            draw_marker(p, x, y_manual, color)
 
         # ── Ejes ─────────────────────────────────────────────────────────────
         font  = QFont("Courier", 8)
@@ -270,9 +271,9 @@ class SpecPlayerWindow(QWidget):
         ])
 
     def set_manual_marks(self, marks: list):
-        """Marcas manuales (tiempo absoluto del audio) → flechas azules."""
+        """Marcas manuales: lista de (tiempo absoluto del audio, QColor)."""
         self._spec_widget.set_manual_marks(
-            [t - self._t0_sec for t in (marks or [])]
+            [(t - self._t0_sec, color) for t, color in (marks or [])]
         )
 
     def closeEvent(self, event):
@@ -316,7 +317,9 @@ class VideoPlayerWindow(QWidget):
     """
     Ventana independiente con reproductor de video.
     Emite sync_position(float) en cada tick para que SpecPlayerWindow lo siga.
-    Emite capture_requested() cuando el usuario presiona el botón Capturar.
+    Emite capture_requested(tipo) cuando el usuario presiona un botón de
+    captura (uno por tipo de captura manual, o "Capturar" genérico si no
+    hay tipos definidos).
 
     Navegación fina (para pararse justo encima de un ultrasonido):
       ← / →              ±1 frame
@@ -327,7 +330,7 @@ class VideoPlayerWindow(QWidget):
     """
     closed            = pyqtSignal()
     sync_position     = pyqtSignal(float)   # tiempo en segundos del video
-    capture_requested = pyqtSignal()        # solicitud de captura de pantalla
+    capture_requested = pyqtSignal(str)     # solicitud de captura; arg = tipo de captura
 
     _SPEEDS = [("0.25×", 0.25), ("0.5×", 0.5), ("1×", 1.0),
                ("2×",    2.0),  ("4×",   4.0)]
@@ -336,7 +339,14 @@ class VideoPlayerWindow(QWidget):
     # frame, pero el cursor del espectrograma sí se mueve.
     _FINE_STEPS_MS = [1, 5, 10, 25, 50]
 
-    def __init__(self, video_engine, parent=None):
+    # Máximo de tipos de captura manual soportados como botones propios.
+    MAX_TIPOS_CAPTURA = markers.MAX_TIPOS_CAPTURA
+
+    def __init__(self, video_engine, capture_types=None, parent=None):
+        """
+        capture_types: lista de (nombre, QColor) — hasta MAX_TIPOS_CAPTURA.
+        Si viene vacía o None, se muestra un único botón "Capturar" genérico.
+        """
         super().__init__(parent, Qt.Window)
         self.setWindowTitle("Video")
 
@@ -348,6 +358,7 @@ class VideoPlayerWindow(QWidget):
         self._playing  = False
         self._speed    = 1.0
         self._fine_ms  = 10
+        self._capture_types = list(capture_types or [])[:self.MAX_TIPOS_CAPTURA]
 
         interval_ms = max(16, int(1000.0 / self._fps))
         self._timer = QTimer(self)
@@ -415,14 +426,7 @@ class VideoPlayerWindow(QWidget):
         self._pos_lbl.setStyleSheet(
             "font-family:Courier; font-size:11px; color:#bbb;")
 
-        self._cap_btn = QPushButton("📸  Capturar")
-        self._cap_btn.setFixedSize(110, 28)
-        self._cap_btn.setToolTip(
-            "Guarda una captura con el video y los espectrogramas\n"
-            "en la carpeta  capturas/  del proyecto."
-        )
-        self._cap_btn.clicked.connect(self.capture_requested)
-        self._cap_btn.setFocusPolicy(Qt.NoFocus)
+        self._cap_btns = self._build_capture_buttons()
 
         ctrl.addWidget(self._play_btn)
         ctrl.addWidget(self._stop_btn)
@@ -430,12 +434,47 @@ class VideoPlayerWindow(QWidget):
         ctrl.addWidget(QLabel("Vel:"))
         ctrl.addWidget(spd)
         ctrl.addSpacing(12)
-        ctrl.addWidget(self._cap_btn)
+        for btn in self._cap_btns:
+            ctrl.addWidget(btn)
         ctrl.addStretch()
         ctrl.addWidget(self._pos_lbl)
         root.addLayout(ctrl)
 
         root.addLayout(self._build_nav_row())
+
+    def _build_capture_buttons(self) -> list:
+        """
+        Un botón por cada tipo de captura manual (hasta MAX_TIPOS_CAPTURA),
+        coloreado según su tipo. Si no hay tipos definidos, un único botón
+        genérico "Capturar" que emite tipo = "".
+        """
+        btns = []
+        if not self._capture_types:
+            btn = QPushButton("📸  Capturar")
+            btn.setFixedSize(110, 28)
+            btn.setToolTip(
+                "Guarda una captura con el video y los espectrogramas\n"
+                "en la carpeta  capturas/  del proyecto."
+            )
+            btn.clicked.connect(lambda: self.capture_requested.emit(''))
+            btn.setFocusPolicy(Qt.NoFocus)
+            btns.append(btn)
+            return btns
+
+        for nombre, color in self._capture_types:
+            btn = QPushButton(f"📸  {nombre}")
+            btn.setFixedSize(130, 28)
+            btn.setToolTip(
+                f"Guarda una captura de tipo «{nombre}» con el video y los\n"
+                "espectrogramas en la carpeta  capturas/  del proyecto."
+            )
+            btn.setStyleSheet(
+                f"background-color:{color.name()}; color:white; font-weight:bold;"
+            )
+            btn.clicked.connect(lambda checked=False, t=nombre: self.capture_requested.emit(t))
+            btn.setFocusPolicy(Qt.NoFocus)
+            btns.append(btn)
+        return btns
 
     def _build_nav_row(self) -> QHBoxLayout:
         """Fila de navegación fina: pasos por frame y pasos sub-frame en ms."""

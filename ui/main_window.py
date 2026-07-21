@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QSpinBox, QDoubleSpinBox, QLineEdit,
     QScrollArea, QSizePolicy, QStatusBar, QProgressDialog,
     QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QDialogButtonBox,
+    QListWidget, QListWidgetItem, QInputDialog,
 )
 from PyQt5.QtGui import QImage
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -19,12 +20,14 @@ from core.video_engine import VideoEngine
 from core.spectrogram_engine import SpectrogramSettings
 from core.usv_detector import USVEvent
 from core.registro import RegistroVideo, Marca, MANUAL, AUTOMATICO
+from core import tipos_captura as tipos_captura_store
 
 from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
 from workers.spectrogram_worker import SpectrogramWorker
 from workers.usv_worker import USVWorker
 from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow, capture_windows
+from ui import markers
 
 from ui.spectrogram_preview import SpectrogramPreview
 
@@ -342,6 +345,8 @@ class MainWindow(QMainWindow):
         self._gen_btn.clicked.connect(self._open_dual_windows)
         gl3.addWidget(self._gen_btn)
 
+        gl3.addWidget(self._build_tipos_captura_box())
+
         lv.addWidget(g3)
         lv.addStretch()
 
@@ -356,6 +361,115 @@ class MainWindow(QMainWindow):
 
         root.addWidget(scroll)
         root.addWidget(self._preview)
+
+    # ── Tipos de captura manual ────────────────────────────────────────────────
+
+    def _build_tipos_captura_box(self) -> QGroupBox:
+        box = QGroupBox("Tipos de captura manual")
+        bv = QVBoxLayout(box)
+        bv.setSpacing(5)
+
+        self._tipos_list = QListWidget()
+        self._tipos_list.setFixedHeight(90)
+        self._tipos_list.itemDoubleClicked.connect(self._editar_tipo_captura)
+        bv.addWidget(self._tipos_list)
+
+        self._crear_tipo_btn = QPushButton("Crear tipo de captura")
+        self._crear_tipo_btn.setFixedHeight(28)
+        self._crear_tipo_btn.clicked.connect(self._crear_tipo_captura)
+        bv.addWidget(self._crear_tipo_btn)
+
+        edit_row = QHBoxLayout()
+        self._editar_tipo_btn = QPushButton("Editar")
+        self._editar_tipo_btn.clicked.connect(self._editar_tipo_captura)
+        self._eliminar_tipo_btn = QPushButton("Eliminar")
+        self._eliminar_tipo_btn.clicked.connect(self._eliminar_tipo_captura)
+        edit_row.addWidget(self._editar_tipo_btn)
+        edit_row.addWidget(self._eliminar_tipo_btn)
+        bv.addLayout(edit_row)
+
+        self._cargar_tipos_captura()
+        return box
+
+    def _cargar_tipos_captura(self):
+        self._tipos_list.clear()
+        for nombre in tipos_captura_store.cargar():
+            self._tipos_list.addItem(QListWidgetItem(nombre))
+        self._actualizar_estado_crear_tipo()
+
+    def _tipos_captura_actuales(self) -> list:
+        return [self._tipos_list.item(i).text()
+                for i in range(self._tipos_list.count())]
+
+    def _actualizar_estado_crear_tipo(self):
+        al_limite = len(self._tipos_captura_actuales()) >= markers.MAX_TIPOS_CAPTURA
+        self._crear_tipo_btn.setEnabled(not al_limite)
+        self._crear_tipo_btn.setToolTip(
+            f"Ya hay {markers.MAX_TIPOS_CAPTURA} tipos creados (máximo)."
+            if al_limite else ""
+        )
+
+    def _crear_tipo_captura(self):
+        if len(self._tipos_captura_actuales()) >= markers.MAX_TIPOS_CAPTURA:
+            QMessageBox.information(
+                self, "Límite alcanzado",
+                f"Ya hay {markers.MAX_TIPOS_CAPTURA} tipos de captura creados.\n"
+                "Eliminá alguno antes de crear uno nuevo."
+            )
+            return
+        nombre, ok = QInputDialog.getText(
+            self, "Crear tipo de captura", "Nombre del tipo de captura:")
+        if not ok:
+            return
+        nombre = nombre.strip()
+        if not nombre:
+            return
+        if nombre in self._tipos_captura_actuales():
+            self._status.showMessage(f"El tipo «{nombre}» ya existe.")
+            return
+        self._tipos_list.addItem(QListWidgetItem(nombre))
+        tipos_captura_store.guardar(self._tipos_captura_actuales())
+        self._actualizar_estado_crear_tipo()
+        self._status.showMessage(f"✓ Tipo de captura «{nombre}» creado.")
+
+    def _editar_tipo_captura(self, *_):
+        item = self._tipos_list.currentItem()
+        if item is None:
+            self._status.showMessage("Seleccioná un tipo de captura para editar.")
+            return
+        nombre, ok = QInputDialog.getText(
+            self, "Editar tipo de captura", "Nuevo nombre:", text=item.text())
+        if not ok:
+            return
+        nombre = nombre.strip()
+        if not nombre:
+            return
+        otros = [t for i, t in enumerate(self._tipos_captura_actuales())
+                  if self._tipos_list.item(i) is not item]
+        if nombre in otros:
+            self._status.showMessage(f"El tipo «{nombre}» ya existe.")
+            return
+        item.setText(nombre)
+        tipos_captura_store.guardar(self._tipos_captura_actuales())
+        self._status.showMessage(f"✓ Tipo de captura renombrado a «{nombre}».")
+
+    def _eliminar_tipo_captura(self):
+        item = self._tipos_list.currentItem()
+        if item is None:
+            self._status.showMessage("Seleccioná un tipo de captura para eliminar.")
+            return
+        resp = QMessageBox.question(
+            self, "Eliminar tipo de captura",
+            f"¿Eliminar el tipo «{item.text()}»?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if resp != QMessageBox.Yes:
+            return
+        row = self._tipos_list.row(item)
+        self._tipos_list.takeItem(row)
+        tipos_captura_store.guardar(self._tipos_captura_actuales())
+        self._actualizar_estado_crear_tipo()
+        self._status.showMessage("✓ Tipo de captura eliminado.")
 
     # ── Settings snapshot ─────────────────────────────────────────────────────
 
@@ -428,7 +542,7 @@ class MainWindow(QMainWindow):
         self._manual_marks = []
 
         if self._registro.existe:
-            self._manual_marks = [m.inicio_s
+            self._manual_marks = [(m.inicio_s, m.tipo_captura)
                                   for m in self._registro.cargar_manuales()]
             self._usv_events = [
                 USVEvent(
@@ -469,13 +583,15 @@ class MainWindow(QMainWindow):
 
     def _refresh_marks(self):
         """Vuelca las marcas actuales al preview y a las ventanas abiertas."""
+        marcas_color = [(t, self._color_for_tipo(tipo))
+                        for t, tipo in self._manual_marks]
         self._preview.set_time_origin(self._spec_t0)
         self._preview.set_usv_events(self._usv_events)
-        self._preview.set_manual_marks(self._manual_marks)
+        self._preview.set_manual_marks(marcas_color)
         for win in (self._spec_win, self._spec_win2):
             if win is not None:
                 win.set_usv_events(self._usv_events)
-                win.set_manual_marks(self._manual_marks)
+                win.set_manual_marks(marcas_color)
 
     def _on_audio_loaded(self, engine: AudioEngine):
         self._audio_engine = engine
@@ -842,7 +958,11 @@ class MainWindow(QMainWindow):
         window_sec = self._dur_spin.value()
 
         # ── Ventana del video ──────────────────────────────────────────────
-        self._video_win = VideoPlayerWindow(self._video_engine)
+        capture_types = [
+            (nombre, markers.color_for_boton_index(i))
+            for i, nombre in enumerate(self._tipos_captura_actuales())
+        ][:VideoPlayerWindow.MAX_TIPOS_CAPTURA]
+        self._video_win = VideoPlayerWindow(self._video_engine, capture_types=capture_types)
         self._video_win.closed.connect(lambda: setattr(self, '_video_win', None))
         self._video_win.capture_requested.connect(self._do_capture)
 
@@ -895,10 +1015,21 @@ class MainWindow(QMainWindow):
 
     # ── Captura de pantalla ───────────────────────────────────────────────────
 
-    def _do_capture(self):
+    def _color_for_tipo(self, tipo: str):
+        """Color de marca correspondiente a un tipo de captura (por su índice
+        actual en la lista), o el azul por defecto si no se reconoce."""
+        if not tipo:
+            return markers.COLOR_MANUAL
+        tipos = self._tipos_captura_actuales()
+        if tipo in tipos:
+            return markers.color_for_tipo_index(tipos.index(tipo))
+        return markers.COLOR_MANUAL
+
+    def _do_capture(self, tipo: str = ''):
         """
         Marca manualmente el instante actual: guarda la captura combinada en
-        capturas/, lo anota en el registro del video y dibuja la flecha azul.
+        capturas/, lo anota en el registro del video y dibuja la flecha del
+        color correspondiente al tipo de captura elegido.
         """
         wins = [w for w in (self._video_win, self._spec_win, self._spec_win2)
                 if w is not None]
@@ -916,18 +1047,19 @@ class MainWindow(QMainWindow):
         pos_video = self._video_win.current_pos if self._video_win is not None else 0.0
         audio_t   = max(0.0, pos_video - self._offset.value())
 
-        self._manual_marks.append(audio_t)
-        self._manual_marks.sort()
+        self._manual_marks.append((audio_t, tipo))
+        self._manual_marks.sort(key=lambda m: m[0])
         self._refresh_marks()
 
-        guardado = self._log_marca_manual(pos_video, audio_t, os.path.basename(path))
+        guardado = self._log_marca_manual(pos_video, audio_t, os.path.basename(path), tipo)
+        etiqueta = f" [{tipo}]" if tipo else ""
         self._status.showMessage(
-            f"✓ Marca en {audio_t:.3f}s · capturas/{os.path.basename(path)}"
+            f"✓ Marca{etiqueta} en {audio_t:.3f}s · capturas/{os.path.basename(path)}"
             + (f" · registros/{guardado}" if guardado else "")
         )
 
     def _log_marca_manual(self, pos_video: float, audio_t: float,
-                          captura_filename: str) -> str:
+                          captura_filename: str, tipo_captura: str = '') -> str:
         """Anota la marca manual en el registro CSV de este video."""
         if self._registro is None:
             return ''
@@ -943,6 +1075,7 @@ class MainWindow(QMainWindow):
             video=self._registro.video_name,
             audio=audio_name,
             captura=captura_filename,
+            tipo_captura=tipo_captura,
             fecha_hora=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         )
         try:
@@ -973,6 +1106,9 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, title, msg)
 
     def closeEvent(self, event):
+        # Persistir los tipos de captura manual definidos en esta sesión
+        tipos_captura_store.guardar(self._tipos_captura_actuales())
+
         # Cerrar ventanas duales si están abiertas
         for win in (self._video_win, self._spec_win, self._spec_win2):
             if win is not None:

@@ -12,7 +12,44 @@ from PyQt5.QtCore import QPoint
 
 
 COLOR_AUTO   = QColor(220, 50, 50)    # rojo – detección automática
-COLOR_MANUAL = QColor(60, 140, 255)   # azul – marca del usuario
+COLOR_MANUAL = QColor(60, 140, 255)   # azul – marca del usuario (sin tipo asignado)
+
+# Paleta para hasta 4 tipos de captura manual definidos por el usuario.
+# El color de cada tipo depende de su posición en la lista (0 → primero, etc).
+MANUAL_COLORS = [
+    QColor(60, 140, 255),    # azul
+    QColor(255, 140, 40),    # naranja
+    QColor(80, 210, 110),    # verde
+    QColor(230, 70, 200),    # magenta
+]
+
+
+def color_for_tipo_index(index: int) -> QColor:
+    """Color de la paleta para el tipo en esa posición, o azul por defecto."""
+    if 0 <= index < len(MANUAL_COLORS):
+        return MANUAL_COLORS[index]
+    return COLOR_MANUAL
+
+
+# Máximo de tipos de captura manual soportados.
+MAX_TIPOS_CAPTURA = len(MANUAL_COLORS)
+
+# Paleta específica para los botones de captura: versión apagada/seria de
+# MANUAL_COLORS. Las marcas del espectrograma siguen usando MANUAL_COLORS
+# sin cambios; esto sólo afecta el color de fondo de los botones.
+BUTTON_COLORS = [
+    QColor(55, 90, 130),     # azul acero
+    QColor(150, 95, 45),     # marrón/naranja quemado
+    QColor(60, 105, 70),     # verde oscuro
+    QColor(115, 65, 105),    # ciruela
+]
+
+
+def color_for_boton_index(index: int) -> QColor:
+    """Color apagado de la paleta de botones para esa posición."""
+    if 0 <= index < len(BUTTON_COLORS):
+        return BUTTON_COLORS[index]
+    return BUTTON_COLORS[0]
 
 MARKER_H = 10   # alto de la flecha, en píxeles
 ROW_GAP  = 3    # separación entre filas

@@ -74,7 +74,7 @@ class SpectrogramPreview(QWidget):
         self.update()
 
     def set_manual_marks(self, marks: list):
-        """Tiempos absolutos del audio marcados a mano: flecha azul."""
+        """marks: lista de (tiempo absoluto del audio, QColor)."""
         self._manual_marks = list(marks) if marks else []
         self.update()
 
@@ -220,13 +220,13 @@ class SpectrogramPreview(QWidget):
             p.drawRect(x0, y_top, x1 - x0, y_bottom - y_top)
             draw_marker(p, (x0 + x1) // 2, y_auto, COLOR_AUTO)
 
-        # ── Marcas manuales: línea + flecha azul (fila de arriba) ─────────────
+        # ── Marcas manuales: línea + flecha con el color de su tipo ───────────
         y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)
-        for t in self._manual_marks:
+        for t, color in self._manual_marks:
             if t < self._t0 or t > self._t0 + t_end:
                 continue
             x = _x(t)
-            p.setPen(QPen(COLOR_MANUAL, 1))
+            p.setPen(QPen(color, 1))
             p.setBrush(Qt.NoBrush)
             p.drawLine(x, cr.top(), x, cr.bottom())
-            draw_marker(p, x, y_manual, COLOR_MANUAL)
+            draw_marker(p, x, y_manual, color)

@@ -29,7 +29,7 @@ AUTOMATICO = 'automatico'
 # Cada archivo guarda sólo las columnas que le sirven.
 _HEADER_MANUAL = [
     'inicio_s', 'posicion_video_s', 'offset_audio_s',
-    'video', 'audio', 'captura', 'fecha_hora',
+    'video', 'audio', 'captura', 'tipo_captura', 'fecha_hora',
 ]
 _HEADER_AUTO = [
     'inicio_s', 'fin_s', 'duracion_ms',
@@ -65,6 +65,7 @@ class Marca:
     video: str = ''
     audio: str = ''
     captura: str = ''
+    tipo_captura: str = ''
     fecha_hora: str = ''
 
     @property
@@ -89,6 +90,7 @@ class Marca:
             'posicion_video_s': self.posicion_video_s,
             'offset_audio_s': self.offset_audio_s,
             'video': self.video, 'audio': self.audio, 'captura': self.captura,
+            'tipo_captura': self.tipo_captura,
             'fecha_hora': (self.fecha_hora or
                            datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
         }
@@ -125,6 +127,7 @@ class Marca:
             video=(d.get('video') or ''),
             audio=(d.get('audio') or ''),
             captura=(d.get('captura') or ''),
+            tipo_captura=(d.get('tipo_captura') or ''),
             fecha_hora=(d.get('fecha_hora') or ''),
         )
 
