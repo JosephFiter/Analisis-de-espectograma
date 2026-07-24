@@ -7,12 +7,20 @@ Las dos clases de marca van en filas distintas para que nunca se tapen entre
 sí: las automáticas pegadas al espectrograma, las manuales una fila más
 arriba.
 """
+import math
+
 from PyQt5.QtGui import QColor, QPainter, QPen, QPolygon
 from PyQt5.QtCore import QPoint
 
 
 COLOR_AUTO   = QColor(220, 50, 50)    # rojo – detección automática
 COLOR_MANUAL = QColor(60, 140, 255)   # azul – marca del usuario (sin tipo asignado)
+
+# Marca con un tipo asignado, pero que no coincide con ninguno de los tipos
+# actualmente definidos por el usuario (ej: registros viejos con un nombre
+# de tipo que ya no existe en la lista). Se distingue tanto del azul "sin
+# tipo" como de los 4 colores de la paleta.
+COLOR_TIPO_DESCONOCIDO = QColor(0, 190, 190)    # cian – bien distinto del naranja
 
 # Paleta para hasta 4 tipos de captura manual definidos por el usuario.
 # El color de cada tipo depende de su posición en la lista (0 → primero, etc).
@@ -64,6 +72,38 @@ MARGEN_SUPERIOR = 2 * (MARKER_H + ROW_GAP) + 2
 def base_fila(cr_top: int, fila: int) -> int:
     """Y sobre la que se apoya la flecha de esa fila."""
     return cr_top - fila * (MARKER_H + ROW_GAP)
+
+
+def _nice_step(rough: float) -> float:
+    """Redondea `rough` hacia arriba al siguiente paso "lindo" (1, 2 o 5
+    por una potencia de 10), para que los ticks del eje de tiempo caigan
+    en valores redondos en vez de fracciones arbitrarias de la ventana."""
+    if rough <= 0:
+        return 1.0
+    exp  = math.floor(math.log10(rough))
+    base = 10 ** exp
+    for m in (1, 2, 5, 10):
+        step = m * base
+        if step >= rough - 1e-12:
+            return step
+    return 10 * base
+
+
+def time_ticks(t_start: float, win_dur: float, target_n: int = 6) -> list:
+    """Tiempos absolutos "lindos" dentro de [t_start, t_start + win_dur],
+    espaciados en pasos de 1/2/5 × 10^n en vez de en fracciones iguales de
+    la ventana (que al redondearse a un decimal para mostrarlas pueden
+    saltear valores y quedar espaciadas de forma dispareja)."""
+    if win_dur <= 0 or target_n <= 0:
+        return [t_start]
+    step  = _nice_step(win_dur / target_n)
+    idx   = math.ceil((t_start - step * 1e-6) / step)
+    limit = t_start + win_dur + step * 1e-6
+    ticks = []
+    while idx * step <= limit:
+        ticks.append(idx * step)
+        idx += 1
+    return ticks
 
 
 def draw_marker(p: QPainter, xc: int, y_base: int, color: QColor):

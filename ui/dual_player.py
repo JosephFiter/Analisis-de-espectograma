@@ -179,32 +179,43 @@ class _ScrollingSpecWidget(QWidget):
                    "kHz" if use_khz else "Hz")
         p.restore()
 
-        # Ticks de tiempo (X) — muestran tiempos absolutos dentro de la ventana
-        n_x = min(8, max(4, int(cr.width() / 80)))
-        for i in range(n_x + 1):
-            frac  = i / n_x
-            t_rel = frac * win_dur
-            t_abs = t_start + t_rel
-            x     = cr.left() + int(frac * cr.width())
+        # Ticks de tiempo (X) — en valores "lindos" (pasos de 1/2/5 × 10^n)
+        # en vez de fracciones iguales de la ventana, para que no salteen
+        # valores ni queden espaciados de forma dispareja al redondear.
+        target_n = 2 * min(8, max(4, int(cr.width() / 80)))
+
+        def _lbl(t_abs: float, t_rel: float) -> str:
+            if win_dur < 1.0:
+                return f"{t_rel * 1000:.0f}ms"
+            if total_t >= 60:
+                m   = int(t_abs) // 60
+                sec = t_abs - m * 60
+                return f"{m}:{sec:04.1f}"
+            return f"{t_abs:.2f}s"
+
+        t_final   = t_start + win_dur
+        final_lbl = _lbl(t_final, win_dur)
+        final_w   = fm.horizontalAdvance(final_lbl)
+
+        for t_abs in markers.time_ticks(t_start, win_dur, target_n):
+            t_rel = t_abs - t_start
+            x     = cr.left() + int(t_rel / win_dur * cr.width())
             p.setPen(QPen(gray, 1))
             p.drawLine(x, cr.bottom(), x, cr.bottom() + 4)
 
-            if win_dur < 1.0:
-                lbl = f"{t_rel * 1000:.0f}ms"
-            elif total_t >= 60:
-                m   = int(t_abs) // 60
-                sec = t_abs - m * 60
-                lbl = f"{m}:{sec:04.1f}"
-            else:
-                lbl = f"{t_abs:.2f}s"
-            tw = fm.horizontalAdvance(lbl)
+            lbl = _lbl(t_abs, t_rel)
+            tw  = fm.horizontalAdvance(lbl)
+            # No dibujar si se solaparía con la etiqueta del tiempo final.
+            if x + tw // 2 > cr.right() - final_w // 2 - 6:
+                continue
             p.setPen(light)
             p.drawText(x - tw // 2, cr.bottom() + self.MB - 4, lbl)
 
-        x_unit = "ms" if win_dur < 1.0 else "seg"
-        p.setPen(QColor(140, 140, 140))
-        p.drawText(QRect(cr.right() - 30, cr.bottom() + 4, 36, 16),
-                   Qt.AlignRight, x_unit)
+        # Tiempo final de la ventana, siempre visible en el borde derecho.
+        p.setPen(QPen(gray, 1))
+        p.drawLine(cr.right(), cr.bottom(), cr.right(), cr.bottom() + 4)
+        p.setPen(light)
+        p.drawText(cr.right() - final_w, cr.bottom() + self.MB - 4, final_lbl)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -683,7 +694,7 @@ def capture_windows(windows: list, save_folder: str) -> str:
         y += pm.height()
     p.end()
 
-    ts   = datetime.now().strftime('%Y%m%d_%H%M%S')
+    ts   = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
     path = os.path.join(save_folder, f'captura_{ts}.png')
     combined.save(path)
     return path

@@ -264,11 +264,6 @@ class MainWindow(QMainWindow):
         self._range_cb = QCheckBox("Analizar lapso específico")
         gl2.addWidget(self._range_cb)
 
-        self._range_widget = QWidget()
-        rv = QVBoxLayout(self._range_widget)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(3)
-
         dur_row = QHBoxLayout()
         dur_row.addWidget(QLabel("Duración (s):"))
         self._dur_spin = QDoubleSpinBox()
@@ -277,7 +272,12 @@ class MainWindow(QMainWindow):
         self._dur_spin.setDecimals(1)
         self._dur_spin.setValue(2.5)
         dur_row.addWidget(self._dur_spin)
-        rv.addLayout(dur_row)
+        gl2.addLayout(dur_row)
+
+        self._range_widget = QWidget()
+        rv = QVBoxLayout(self._range_widget)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rv.setSpacing(3)
 
         start_row = QHBoxLayout()
         start_row.addWidget(QLabel("Inicio (s):"))
@@ -1017,13 +1017,14 @@ class MainWindow(QMainWindow):
 
     def _color_for_tipo(self, tipo: str):
         """Color de marca correspondiente a un tipo de captura (por su índice
-        actual en la lista), o el azul por defecto si no se reconoce."""
+        actual en la lista); azul si no tiene tipo asignado, o un color
+        distinto si tiene un tipo que ya no está entre los definidos."""
         if not tipo:
             return markers.COLOR_MANUAL
         tipos = self._tipos_captura_actuales()
         if tipo in tipos:
             return markers.color_for_tipo_index(tipos.index(tipo))
-        return markers.COLOR_MANUAL
+        return markers.COLOR_TIPO_DESCONOCIDO
 
     def _do_capture(self, tipo: str = ''):
         """

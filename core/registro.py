@@ -161,17 +161,27 @@ class _ArchivoMarcas:
         return marcas
 
     def agregar(self, marcas: List[Marca]) -> int:
-        """Agrega, salteando las que ya estén (mismo inicio, dentro de 1 ms)."""
+        """Agrega las marcas nuevas.
+
+        Para las automáticas se saltean las que ya estén (mismo inicio,
+        dentro de 1 ms), para no duplicar detecciones al reprocesar. Las
+        manuales se agregan siempre tal cual, aunque coincidan en el
+        instante con otra ya guardada (el usuario puede querer registrar
+        más de una captura en el mismo lugar).
+        """
         if not marcas:
             return 0
 
-        existentes = [m.inicio_s for m in self.cargar()]
-        nuevas: List[Marca] = []
-        for m in marcas:
-            if any(abs(i - m.inicio_s) < _TOL_S for i in existentes):
-                continue
-            nuevas.append(m)
-            existentes.append(m.inicio_s)
+        if self.tipo == MANUAL:
+            nuevas = list(marcas)
+        else:
+            existentes = [m.inicio_s for m in self.cargar()]
+            nuevas = []
+            for m in marcas:
+                if any(abs(i - m.inicio_s) < _TOL_S for i in existentes):
+                    continue
+                nuevas.append(m)
+                existentes.append(m.inicio_s)
 
         if not nuevas:
             return 0

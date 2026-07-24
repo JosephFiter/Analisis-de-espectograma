@@ -160,35 +160,43 @@ class SpectrogramPreview(QWidget):
         p.drawText(QRect(-30, -10, 60, 20), Qt.AlignCenter, unit)
         p.restore()
 
-        # ── X ticks & labels (time) ────────────────────────────────────────
-        n_x = min(8, max(4, int(cr.width() / 80)))
-        for i in range(n_x + 1):
-            frac = i / n_x
-            t    = frac * t_end
-            x    = cr.left() + int(frac * cr.width())
+        # ── X ticks & labels (time) ─────────────────────────────────────────
+        # Ticks en valores "lindos" (pasos de 1/2/5 × 10^n) en vez de
+        # fracciones iguales del total, para que no salteen valores ni
+        # queden espaciados de forma dispareja al redondear la etiqueta.
+        target_n = 2 * min(8, max(4, int(cr.width() / 80)))
+
+        def _lbl(t: float) -> str:
+            m   = int(t) // 60
+            sec = t - m * 60
+            if t_end >= 60:
+                return f"{m}:{sec:04.1f}"
+            if t_end >= 1.0:
+                return f"{t:.2f}s"
+            return f"{t*1000:.0f}ms"
+
+        final_lbl = _lbl(t_end)
+        final_w   = fm.horizontalAdvance(final_lbl)
+
+        for t in markers.time_ticks(0.0, t_end, target_n):
+            x = cr.left() + int(t / t_end * cr.width()) if t_end > 0 else cr.left()
 
             p.setPen(QPen(gray, 1))
             p.drawLine(x, cr.bottom(), x, cr.bottom() + 4)
 
-            m   = int(t) // 60
-            sec = t - m * 60
-            if t_end >= 60:
-                lbl = f"{m}:{sec:04.1f}"
-            elif t_end >= 1.0:
-                lbl = f"{t:.2f}s"
-            else:
-                lbl = f"{t*1000:.0f}ms"
+            lbl = _lbl(t)
             tw  = fm.horizontalAdvance(lbl)
+            # No dibujar si se solaparía con la etiqueta del tiempo final.
+            if x + tw // 2 > cr.right() - final_w // 2 - 6:
+                continue
             p.setPen(light)
             p.drawText(x - tw // 2, cr.bottom() + self.MB - 4, lbl)
 
-        # "s" / "mm:ss" x-axis title
-        x_unit = "ms" if t_end < 1.0 else "seg"
-        p.setPen(QColor(140, 140, 140))
-        p.drawText(
-            QRect(cr.right() - 30, cr.bottom() + 4, 36, 16),
-            Qt.AlignRight, x_unit,
-        )
+        # Tiempo final, siempre visible en el borde derecho.
+        p.setPen(QPen(gray, 1))
+        p.drawLine(cr.right(), cr.bottom(), cr.right(), cr.bottom() + 4)
+        p.setPen(light)
+        p.drawText(cr.right() - final_w, cr.bottom() + self.MB - 4, final_lbl)
 
         if t_end <= 0:
             return
