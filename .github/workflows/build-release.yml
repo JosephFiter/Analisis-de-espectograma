@@ -1,0 +1,46 @@
+name: Build y Release del .exe
+
+on:
+  push:
+    branches: [atras]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Compilar ejecutable
+        run: >
+          pyinstaller --noconfirm --windowed --name "AnalisisEspectrograma"
+          --add-data "config;config"
+          main.py
+
+      - name: Comprimir carpeta de salida
+        run: Compress-Archive -Path dist/AnalisisEspectrograma/* -DestinationPath AnalisisEspectrograma.zip
+
+      - name: Crear Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
+          body: |
+            Build automático desde la rama `atras`.
+            Commit: ${{ github.sha }}
+          files: AnalisisEspectrograma.zip
+          make_latest: true
