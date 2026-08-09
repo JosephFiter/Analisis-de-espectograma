@@ -2,7 +2,7 @@ name: Build y Release del .exe
 
 on:
   push:
-    branches: [atras]
+    branches: [main]
 
 permissions:
   contents: write
@@ -40,7 +40,7 @@ jobs:
           tag_name: build-${{ github.run_number }}
           name: "Build #${{ github.run_number }}"
           body: |
-            Build automático desde la rama `atras`.
+            Build automático desde la rama `main`.
             Commit: ${{ github.sha }}
           files: AnalisisEspectrograma.zip
           make_latest: true
