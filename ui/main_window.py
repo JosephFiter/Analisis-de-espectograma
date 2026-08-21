@@ -1,4 +1,6 @@
 import os
+import csv
+from datetime import datetime
 import numpy as np
 
 from PyQt5.QtWidgets import (
@@ -7,6 +9,8 @@ from PyQt5.QtWidgets import (
     QProgressBar, QGroupBox, QSlider, QComboBox,
     QCheckBox, QSpinBox, QDoubleSpinBox, QLineEdit,
     QScrollArea, QSizePolicy, QStatusBar, QProgressDialog,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QDialogButtonBox,
+    QListWidget, QListWidgetItem, QInputDialog,
 )
 from PyQt5.QtGui import QImage
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -14,12 +18,16 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from core.audio_engine import AudioEngine
 from core.video_engine import VideoEngine
 from core.spectrogram_engine import SpectrogramSettings
+from core.usv_detector import USVEvent
+from core.registro import RegistroVideo, Marca, MANUAL, AUTOMATICO
+from core import tipos_captura as tipos_captura_store
 
 from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
 from workers.spectrogram_worker import SpectrogramWorker
-from workers.render_worker import RenderWorker
-from workers.detection_worker import DetectionWorker
+from workers.usv_worker import USVWorker
+from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow, capture_windows
+from ui import markers
 
 from ui.spectrogram_preview import SpectrogramPreview
 
@@ -78,20 +86,24 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Ayudantia Itba")
         self.resize(1380, 820)
 
-        self._usv_eventos    = []
-        self._spec_S_db      = None   # S_db del espectrograma visible (lo usamos para detección)
-        self._spec_samples   = None
-        self._spec_sr        = None
         self._audio_engine:  AudioEngine = None
         self._audio_engine2: AudioEngine = None
         self._video_engine:  VideoEngine = None
         self._spec_rgba   = None    # numpy H×W×4 RGBA uint8
         self._spec_times  = None
         self._spec_freqs  = None
-        self._spec_rgba2  = None
+        self._spec_rgba2  = None    # segundo espectrograma (opcional)
         self._spec_times2 = None
         self._spec_freqs2 = None
-        self._workers     = []
+        self._workers      = []
+        self._computing    = False  # True mientras hay workers de espectrograma corriendo
+        self._video_win    = None   # ventana independiente del video
+        self._spec_win     = None   # ventana independiente del espectrograma 1
+        self._spec_win2    = None   # ventana independiente del espectrograma 2
+        self._usv_events   = []     # eventos USV, en tiempo absoluto del audio
+        self._manual_marks = []     # marcas manuales, en tiempo absoluto del audio
+        self._spec_t0      = 0.0    # instante del audio en el borde izq. del espectrograma
+        self._registro     = None   # RegistroVideo del video cargado
 
         self._build_ui()
         self._status = QStatusBar()
@@ -125,17 +137,17 @@ class MainWindow(QMainWindow):
         self._vid_lbl.setWordWrap(True)
         self._vid_lbl.setStyleSheet("color:#888; font-size:11px;")
 
-        self._aud_btn = QPushButton("Cargar Audio (.wav)…")
+        self._aud_btn = QPushButton("Cargar Audio 1 (.wav)…")
         self._aud_btn.setFixedHeight(30)
         self._aud_btn.clicked.connect(self._open_audio)
-        self._aud_lbl = QLabel("Sin audio cargado")
+        self._aud_lbl = QLabel("Sin audio 1 cargado")
         self._aud_lbl.setWordWrap(True)
         self._aud_lbl.setStyleSheet("color:#888; font-size:11px;")
 
         self._aud2_btn = QPushButton("Cargar Audio 2 (.wav)…")
         self._aud2_btn.setFixedHeight(30)
         self._aud2_btn.clicked.connect(self._open_audio2)
-        self._aud2_lbl = QLabel("Sin segundo audio (opcional)")
+        self._aud2_lbl = QLabel("Sin audio 2 (opcional)")
         self._aud2_lbl.setWordWrap(True)
         self._aud2_lbl.setStyleSheet("color:#888; font-size:11px;")
 
@@ -248,24 +260,19 @@ class MainWindow(QMainWindow):
         self._per_chan_cb.toggled.connect(self._on_per_chan_toggled)
         gl2.addWidget(self._per_chan_cb)
 
-        # ── Duración / ventana visible ─────────────────────────────────────
+        # ── Time range selector ────────────────────────────────────────────
+        self._range_cb = QCheckBox("Analizar lapso específico")
+        gl2.addWidget(self._range_cb)
+
         dur_row = QHBoxLayout()
-        dur_row.addWidget(QLabel("Duración visible (s):"))
+        dur_row.addWidget(QLabel("Duración (s):"))
         self._dur_spin = QDoubleSpinBox()
         self._dur_spin.setRange(0.1, 7200.0)
         self._dur_spin.setSingleStep(0.5)
         self._dur_spin.setDecimals(1)
         self._dur_spin.setValue(2.5)
-        self._dur_spin.setToolTip(
-            "Segundos de audio visibles a la vez en la previsualización y el video.\n"
-            "También define el tamaño del lapso al usar 'Analizar lapso específico'."
-        )
         dur_row.addWidget(self._dur_spin)
         gl2.addLayout(dur_row)
-
-        # ── Lapso específico (opcional) ────────────────────────────────────
-        self._range_cb = QCheckBox("Analizar lapso específico")
-        gl2.addWidget(self._range_cb)
 
         self._range_widget = QWidget()
         rv = QVBoxLayout(self._range_widget)
@@ -282,7 +289,7 @@ class MainWindow(QMainWindow):
         start_row.addWidget(self._start_spin)
         rv.addLayout(start_row)
 
-        self._range_lbl = QLabel("0.0 s  →  2.5 s")
+        self._range_lbl = QLabel("0.0 s  →  2.0 s")
         self._range_lbl.setStyleSheet("font-size:11px; color:#aaa;")
         rv.addWidget(self._range_lbl)
 
@@ -305,40 +312,17 @@ class MainWindow(QMainWindow):
         self._prev_btn.clicked.connect(self._run_spectrogram)
         gl2.addWidget(self._prev_btn)
 
-        self._detect_btn = QPushButton("Detectar USVs")
-        self._detect_btn.setFixedHeight(30)
-        self._detect_btn.setEnabled(False)
-        self._detect_btn.setStyleSheet("color:#ff9955; font-weight:bold;")
-        self._detect_btn.setToolTip(
-            "Detecta automáticamente vocalizaciones ultrasónicas en el audio cargado.\n"
-            "Los eventos aparecen como rectángulos rojos sobre el espectrograma."
-        )
-        self._detect_btn.clicked.connect(self._run_detection)
-        gl2.addWidget(self._detect_btn)
-
-
+        self._usv_btn = QPushButton("Detectar USVs")
+        self._usv_btn.setFixedHeight(30)
+        self._usv_btn.setEnabled(False)
+        self._usv_btn.clicked.connect(self._run_usv_detection)
+        gl2.addWidget(self._usv_btn)
         lv.addWidget(g2)
 
-        # Step 3 ─ generate
-        g3 = QGroupBox("Paso 3 — Generar video")
+        # Step 3 ─ abrir ventanas
+        g3 = QGroupBox("Paso 3 — Ver en ventanas")
         gl3 = QVBoxLayout(g3)
         gl3.setSpacing(5)
-
-        gl3.addWidget(QLabel("Archivo de salida:"))
-        of_row = QHBoxLayout()
-        self._out_edit = QLineEdit()
-        self._out_edit.setPlaceholderText("salida.mp4")
-        of_row.addWidget(self._out_edit)
-        self._browse_btn = QPushButton("…")
-        self._browse_btn.setFixedWidth(30)
-        self._browse_btn.clicked.connect(self._browse_output)
-        of_row.addWidget(self._browse_btn)
-        gl3.addLayout(of_row)
-
-        self._size_sl   = _LS("Ancho espectrograma:", 15, 80, 50, fmt="{}%")
-        self._height_sl = _LS("Alto espectrograma:",  10, 60, 35, fmt="{}%")
-        gl3.addWidget(self._size_sl)
-        gl3.addWidget(self._height_sl)
 
         off_row = QHBoxLayout()
         off_row.addWidget(QLabel("Offset audio (s):"))
@@ -347,24 +331,21 @@ class MainWindow(QMainWindow):
         self._offset.setSingleStep(0.1)
         self._offset.setDecimals(2)
         self._offset.setValue(0.0)
+        self._offset.setToolTip(
+            "Diferencia de tiempo entre el inicio del video y el del audio.\n"
+            "Positivo → el audio empieza después que el video."
+        )
         off_row.addWidget(self._offset)
         gl3.addLayout(off_row)
 
-        self._gen_btn = QPushButton("Generar Video")
+        self._gen_btn = QPushButton("Abrir Ventanas")
         self._gen_btn.setFixedHeight(36)
         self._gen_btn.setStyleSheet("font-weight:bold; font-size:13px;")
         self._gen_btn.setEnabled(False)
-        self._gen_btn.clicked.connect(self._generate_video)
+        self._gen_btn.clicked.connect(self._open_dual_windows)
         gl3.addWidget(self._gen_btn)
 
-        self._progress = QProgressBar()
-        self._progress.setRange(0, 100)
-        self._progress.setVisible(False)
-        gl3.addWidget(self._progress)
-
-        self._prog_lbl = QLabel("")
-        self._prog_lbl.setStyleSheet("font-size:11px; color:#aaa;")
-        gl3.addWidget(self._prog_lbl)
+        gl3.addWidget(self._build_tipos_captura_box())
 
         lv.addWidget(g3)
         lv.addStretch()
@@ -375,80 +356,120 @@ class MainWindow(QMainWindow):
         scroll.setFixedWidth(315)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        # ── Right panel: preview + player controls ────────────────────────
+        # ── Right panel: spectrogram preview widget ────────────────────────
         self._preview = SpectrogramPreview()
-        self._preview.position_changed.connect(self._on_preview_pos)
-        self._preview.playback_ended.connect(self._on_playback_ended)
-
-        right_panel = QWidget()
-        rp = QVBoxLayout(right_panel)
-        rp.setContentsMargins(0, 0, 0, 0)
-        rp.setSpacing(0)
-        rp.addWidget(self._preview)
-
-        # Scrub slider
-        self._scrub_sl = QSlider(Qt.Horizontal)
-        self._scrub_sl.setRange(0, 10000)
-        self._scrub_sl.setValue(0)
-        self._scrub_sl.setFixedHeight(14)
-        self._scrub_sl.sliderMoved.connect(self._on_scrub)
-        rp.addWidget(self._scrub_sl)
-
-        # Controls bar
-        ctrl = QWidget()
-        ctrl.setFixedHeight(38)
-        cl = QHBoxLayout(ctrl)
-        cl.setContentsMargins(6, 4, 6, 4)
-        cl.setSpacing(6)
-
-        self._play_btn = QPushButton("▶  Play")
-        self._play_btn.setFixedSize(88, 28)
-        self._play_btn.clicked.connect(self._on_play_pause)
-
-        self._stop_btn = QPushButton("⏹  Stop")
-        self._stop_btn.setFixedSize(88, 28)
-        self._stop_btn.clicked.connect(self._on_player_stop)
-
-        _PLAYER_SPEEDS = [("0.25×", 0.25), ("0.5×", 0.5), ("1×", 1.0),
-                          ("2×", 2.0), ("4×", 4.0), ("8×", 8.0)]
-        self._player_speeds = [s for _, s in _PLAYER_SPEEDS]
-        spd_combo = QComboBox()
-        spd_combo.setFixedSize(70, 28)
-        for lbl, _ in _PLAYER_SPEEDS:
-            spd_combo.addItem(lbl)
-        spd_combo.setCurrentIndex(2)   # 1×
-        spd_combo.currentIndexChanged.connect(self._on_player_speed)
-        self._spd_combo = spd_combo
-
-        self._pos_spin = QDoubleSpinBox()
-        self._pos_spin.setRange(0.0, 7200.0)
-        self._pos_spin.setSingleStep(0.1)
-        self._pos_spin.setDecimals(2)
-        self._pos_spin.setFixedSize(82, 28)
-        self._pos_spin.setSuffix(" s")
-        self._pos_spin.setToolTip("Tiempo exacto al que ir")
-        self._pos_spin.valueChanged.connect(self._on_pos_spin_changed)
-
-        self._pos_total_lbl = QLabel("/ —")
-        self._pos_total_lbl.setStyleSheet("font-size:11px; color:#bbb;")
-
-        cl.addWidget(self._play_btn)
-        cl.addWidget(self._stop_btn)
-        cl.addSpacing(8)
-        cl.addWidget(QLabel("Vel:"))
-        cl.addWidget(spd_combo)
-        cl.addSpacing(8)
-        cl.addWidget(QLabel("Pos:"))
-        cl.addWidget(self._pos_spin)
-        cl.addWidget(self._pos_total_lbl)
-        cl.addStretch()
-        rp.addWidget(ctrl)
-
-        # Connect dur_spin → preview window size
-        self._dur_spin.valueChanged.connect(self._preview.set_window_sec)
 
         root.addWidget(scroll)
-        root.addWidget(right_panel)
+        root.addWidget(self._preview)
+
+    # ── Tipos de captura manual ────────────────────────────────────────────────
+
+    def _build_tipos_captura_box(self) -> QGroupBox:
+        box = QGroupBox("Tipos de captura manual")
+        bv = QVBoxLayout(box)
+        bv.setSpacing(5)
+
+        self._tipos_list = QListWidget()
+        self._tipos_list.setFixedHeight(90)
+        self._tipos_list.itemDoubleClicked.connect(self._editar_tipo_captura)
+        bv.addWidget(self._tipos_list)
+
+        self._crear_tipo_btn = QPushButton("Crear tipo de captura")
+        self._crear_tipo_btn.setFixedHeight(28)
+        self._crear_tipo_btn.clicked.connect(self._crear_tipo_captura)
+        bv.addWidget(self._crear_tipo_btn)
+
+        edit_row = QHBoxLayout()
+        self._editar_tipo_btn = QPushButton("Editar")
+        self._editar_tipo_btn.clicked.connect(self._editar_tipo_captura)
+        self._eliminar_tipo_btn = QPushButton("Eliminar")
+        self._eliminar_tipo_btn.clicked.connect(self._eliminar_tipo_captura)
+        edit_row.addWidget(self._editar_tipo_btn)
+        edit_row.addWidget(self._eliminar_tipo_btn)
+        bv.addLayout(edit_row)
+
+        self._cargar_tipos_captura()
+        return box
+
+    def _cargar_tipos_captura(self):
+        self._tipos_list.clear()
+        for nombre in tipos_captura_store.cargar():
+            self._tipos_list.addItem(QListWidgetItem(nombre))
+        self._actualizar_estado_crear_tipo()
+
+    def _tipos_captura_actuales(self) -> list:
+        return [self._tipos_list.item(i).text()
+                for i in range(self._tipos_list.count())]
+
+    def _actualizar_estado_crear_tipo(self):
+        al_limite = len(self._tipos_captura_actuales()) >= markers.MAX_TIPOS_CAPTURA
+        self._crear_tipo_btn.setEnabled(not al_limite)
+        self._crear_tipo_btn.setToolTip(
+            f"Ya hay {markers.MAX_TIPOS_CAPTURA} tipos creados (máximo)."
+            if al_limite else ""
+        )
+
+    def _crear_tipo_captura(self):
+        if len(self._tipos_captura_actuales()) >= markers.MAX_TIPOS_CAPTURA:
+            QMessageBox.information(
+                self, "Límite alcanzado",
+                f"Ya hay {markers.MAX_TIPOS_CAPTURA} tipos de captura creados.\n"
+                "Eliminá alguno antes de crear uno nuevo."
+            )
+            return
+        nombre, ok = QInputDialog.getText(
+            self, "Crear tipo de captura", "Nombre del tipo de captura:")
+        if not ok:
+            return
+        nombre = nombre.strip()
+        if not nombre:
+            return
+        if nombre in self._tipos_captura_actuales():
+            self._status.showMessage(f"El tipo «{nombre}» ya existe.")
+            return
+        self._tipos_list.addItem(QListWidgetItem(nombre))
+        tipos_captura_store.guardar(self._tipos_captura_actuales())
+        self._actualizar_estado_crear_tipo()
+        self._status.showMessage(f"✓ Tipo de captura «{nombre}» creado.")
+
+    def _editar_tipo_captura(self, *_):
+        item = self._tipos_list.currentItem()
+        if item is None:
+            self._status.showMessage("Seleccioná un tipo de captura para editar.")
+            return
+        nombre, ok = QInputDialog.getText(
+            self, "Editar tipo de captura", "Nuevo nombre:", text=item.text())
+        if not ok:
+            return
+        nombre = nombre.strip()
+        if not nombre:
+            return
+        otros = [t for i, t in enumerate(self._tipos_captura_actuales())
+                  if self._tipos_list.item(i) is not item]
+        if nombre in otros:
+            self._status.showMessage(f"El tipo «{nombre}» ya existe.")
+            return
+        item.setText(nombre)
+        tipos_captura_store.guardar(self._tipos_captura_actuales())
+        self._status.showMessage(f"✓ Tipo de captura renombrado a «{nombre}».")
+
+    def _eliminar_tipo_captura(self):
+        item = self._tipos_list.currentItem()
+        if item is None:
+            self._status.showMessage("Seleccioná un tipo de captura para eliminar.")
+            return
+        resp = QMessageBox.question(
+            self, "Eliminar tipo de captura",
+            f"¿Eliminar el tipo «{item.text()}»?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if resp != QMessageBox.Yes:
+            return
+        row = self._tipos_list.row(item)
+        self._tipos_list.takeItem(row)
+        tipos_captura_store.guardar(self._tipos_captura_actuales())
+        self._actualizar_estado_crear_tipo()
+        self._status.showMessage("✓ Tipo de captura eliminado.")
 
     # ── Settings snapshot ─────────────────────────────────────────────────────
 
@@ -512,13 +533,65 @@ class MainWindow(QMainWindow):
     def _on_video_loaded(self, engine: VideoEngine):
         self._video_engine = engine
         name = os.path.basename(engine.path)
-        self._vid_lbl.setText(
-            f"{name}\n"
-            f"{engine.frame_count} frames · {engine.fps:.2f} fps · {engine.duration:.1f} s"
-        )
+        info = (f"{name}\n"
+                f"{engine.frame_count} frames · {engine.fps:.2f} fps · {engine.duration:.1f} s")
+
+        # Buscar el registro de este video y restaurar las marcas previas.
+        self._registro = RegistroVideo(engine.path, self._registro_folder())
+        self._usv_events   = []
+        self._manual_marks = []
+
+        if self._registro.existe:
+            self._manual_marks = [(m.inicio_s, m.tipo_captura)
+                                  for m in self._registro.cargar_manuales()]
+            self._usv_events = [
+                USVEvent(
+                    start_s=m.inicio_s,
+                    end_s=m.fin_s,
+                    fmin_hz=m.freq_min_hz or 0.0,
+                    fmax_hz=m.freq_max_hz or 0.0,
+                    peak_energy=m.peak_energy or 0.0,
+                )
+                for m in self._registro.cargar_automaticas()
+            ]
+            n_man, n_aut = len(self._manual_marks), len(self._usv_events)
+            info += f"\n✓ ya analizado — {n_man} manual(es), {n_aut} automática(s)"
+
+            leidos = []
+            if n_man:
+                leidos.append(f"{n_man} de {self._registro.manual.nombre}")
+            if n_aut:
+                leidos.append(f"{n_aut} de {self._registro.auto.nombre}")
+            if leidos:
+                self._status.showMessage(
+                    "Video ya analizado: " + ", ".join(leidos))
+            else:
+                self._status.showMessage(f"Video: {name} (registro vacío)")
+        else:
+            self._status.showMessage(f"Video: {name} (sin análisis previo)")
+
+        self._vid_lbl.setText(info)
         self._vid_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
-        self._status.showMessage(f"Video: {name}")
+        self._refresh_marks()
         self._refresh_buttons()
+
+    def _registro_folder(self) -> str:
+        base = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        )
+        return os.path.join(base, 'registros')
+
+    def _refresh_marks(self):
+        """Vuelca las marcas actuales al preview y a las ventanas abiertas."""
+        marcas_color = [(t, self._color_for_tipo(tipo))
+                        for t, tipo in self._manual_marks]
+        self._preview.set_time_origin(self._spec_t0)
+        self._preview.set_usv_events(self._usv_events)
+        self._preview.set_manual_marks(marcas_color)
+        for win in (self._spec_win, self._spec_win2):
+            if win is not None:
+                win.set_usv_events(self._usv_events)
+                win.set_manual_marks(marcas_color)
 
     def _on_audio_loaded(self, engine: AudioEngine):
         self._audio_engine = engine
@@ -539,44 +612,33 @@ class MainWindow(QMainWindow):
         self._update_range_lbl()
         self._refresh_buttons()
 
-    # ── Player controls ───────────────────────────────────────────────────────
+    def _open_audio2(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Abrir Audio 2", "",
+            "Audio (*.wav *.flac *.aif *.aiff);;Todos (*)"
+        )
+        if path:
+            self._load_audio2(path)
 
-    def _on_play_pause(self):
-        if self._preview.is_playing():
-            self._preview.pause()
-            self._play_btn.setText("▶  Play")
-        else:
-            self._preview.play()
-            self._play_btn.setText("⏸  Pausa")
+    def _load_audio2(self, path: str):
+        dlg = self._prog_dlg("Cargando audio 2…")
+        worker = AudioLoadWorker(path, self)
+        worker.progress.connect(dlg.setValue)
+        worker.status.connect(self._status.showMessage)
+        worker.error.connect(lambda e: self._err("Error de audio 2", e))
+        worker.result.connect(self._on_audio2_loaded)
+        worker.finished.connect(dlg.close)
+        self._start(worker)
+        dlg.exec_()
 
-    def _on_player_stop(self):
-        self._preview.stop()
-        self._play_btn.setText("▶  Play")
-
-    def _on_player_speed(self, idx: int):
-        self._preview.set_speed(self._player_speeds[idx])
-
-    def _on_scrub(self, val: int):
-        total = self._preview.total_duration()
-        if total > 0:
-            self._preview.set_pos((val / 10000.0) * total)
-
-    def _on_preview_pos(self, pos: float):
-        total = self._preview.total_duration()
-        self._pos_total_lbl.setText(f"/ {total:.2f}s")
-        self._pos_spin.blockSignals(True)
-        self._pos_spin.setValue(pos)
-        self._pos_spin.blockSignals(False)
-        if total > 0:
-            self._scrub_sl.blockSignals(True)
-            self._scrub_sl.setValue(int(pos / total * 10000))
-            self._scrub_sl.blockSignals(False)
-
-    def _on_pos_spin_changed(self, val: float):
-        self._preview.set_pos(val)
-
-    def _on_playback_ended(self):
-        self._play_btn.setText("▶  Play")
+    def _on_audio2_loaded(self, engine: AudioEngine):
+        self._audio_engine2 = engine
+        name = os.path.basename(engine.path)
+        self._aud2_lbl.setText(
+            f"{name}\n{engine.sr} Hz · {engine.duration:.1f} s"
+        )
+        self._aud2_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
+        self._status.showMessage(f"Audio 2: {name}")
 
     def _on_per_chan_toggled(self, checked: bool):
         if checked:
@@ -620,248 +682,409 @@ class MainWindow(QMainWindow):
         end = min(val + dur, total)
         self._range_lbl.setText(f"{val:.1f} s  →  {end:.1f} s")
 
-    # ── Audio 2 loading ───────────────────────────────────────────────────────
-
-    def _open_audio2(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Abrir Audio 2", "",
-            "Audio (*.wav *.flac *.aif *.aiff);;Todos (*)"
-        )
-        if path:
-            self._load_audio2(path)
-
-    def _load_audio2(self, path: str):
-        dlg = self._prog_dlg("Cargando audio 2…")
-        worker = AudioLoadWorker(path, self)
-        worker.progress.connect(dlg.setValue)
-        worker.status.connect(self._status.showMessage)
-        worker.error.connect(lambda e: self._err("Error de audio 2", e))
-        worker.result.connect(self._on_audio2_loaded)
-        worker.finished.connect(dlg.close)
-        self._start(worker)
-        dlg.exec_()
-
-    def _on_audio2_loaded(self, engine: AudioEngine):
-        self._audio_engine2 = engine
-        name = os.path.basename(engine.path)
-        self._aud2_lbl.setText(
-            f"{name}\n{engine.sr} Hz · {engine.duration:.1f} s"
-        )
-        self._aud2_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
-        self._status.showMessage(f"Audio 2: {name}")
-
     def _refresh_buttons(self):
         has_audio = self._audio_engine is not None
         has_video = self._video_engine is not None
         has_spec  = self._spec_rgba is not None
-        self._prev_btn.setEnabled(has_audio)
-        self._detect_btn.setEnabled(has_audio)
-        self._gen_btn.setEnabled(has_audio and has_video and has_spec)
-
-    # ── Detection ─────────────────────────────────────────────────────────────
-
-    def _run_detection(self):
-        if self._spec_S_db is None or self._spec_times is None:
-            QMessageBox.information(self, "Sin espectrograma",
-                                    "Primero presioná Ver espectrograma.")
-            return
-
-        self._detect_btn.setEnabled(False)
-        self._status.showMessage("Detectando vocalizaciones ultrasónicas…")
-        self._preview.clear_eventos()
-
-        worker = DetectionWorker(
-            self._spec_S_db,
-            self._spec_times,
-            self._spec_freqs,
-            umbral_db=8.0,
-            parent=self,
-        )
-        worker.progress.connect(
-            lambda p: self._status.showMessage(f"Detectando USVs… {p}%")
-        )
-        worker.error.connect(lambda e: self._err("Error de detección", e))
-        worker.result.connect(self._on_detection_done)
-        worker.finished.connect(lambda: self._detect_btn.setEnabled(True))
-        self._start(worker)
-
-    def _on_detection_done(self, eventos: list):
-        self._usv_eventos = eventos
-        self._preview.set_eventos(eventos)
-        n = len(eventos)
-        if n == 0:
-            self._status.showMessage(
-                "No se detectaron USVs. Probá ajustar los parámetros del espectrograma."
-            )
-        else:
-            self._status.showMessage(
-                f"Se detectaron {n} vocalización{'es' if n != 1 else ''} (40-60 kHz + ~100 kHz simultáneas)."
-            )
+        self._prev_btn.setEnabled(has_audio and not self._computing)
+        self._usv_btn.setEnabled(has_audio and not self._computing)
+        self._gen_btn.setEnabled(has_audio and has_video and has_spec
+                                 and not self._computing)
 
     # ── Spectrogram ───────────────────────────────────────────────────────────
 
     def _run_spectrogram(self):
         if self._audio_engine is None:
             return
+
+        # Abortar workers previos
         for w in list(self._workers):
             if isinstance(w, SpectrogramWorker):
                 w.abort()
 
-        # Reset second spectrogram until recomputed
+        # Resetear resultados (las marcas se conservan: no dependen de los
+        # ajustes de dibujo, sólo del audio)
+        self._spec_rgba   = None
+        self._spec_times  = None
+        self._spec_freqs  = None
         self._spec_rgba2  = None
         self._spec_times2 = None
         self._spec_freqs2 = None
+        self._computing   = True
+        self._refresh_buttons()
 
-        self._preview.set_loading("Calculando espectrograma…")
-
-        dur = self._dur_spin.value()
-        start = self._start_spin.value() if self._range_cb.isChecked() else 0.0
-        sr = self._audio_engine.sr
-        s0 = int(start * sr)
-        s1 = min(int((start + dur) * sr), len(self._audio_engine.samples))
-        samples = self._audio_engine.samples[s0:s1]
-        self._spec_samples = samples
-        self._spec_sr      = self._audio_engine.sr
-
-        worker = SpectrogramWorker(
-            samples,
-            self._audio_engine.sr,
-            self._settings(),
-            self,
+        n_total = 2 if self._audio_engine2 is not None else 1
+        self._preview.set_loading(
+            f"Calculando espectrograma 1/{n_total}…"
         )
-        worker.progress.connect(
-            lambda p: self._status.showMessage(f"Calculando espectrograma… {p}%")
-        )
-        worker.status.connect(self._status.showMessage)
-        worker.error.connect(lambda e: self._err("Error espectrograma", e))
+        self._status.showMessage(f"Calculando espectrograma 1/{n_total}…")
+
+        if self._range_cb.isChecked():
+            start = self._start_spin.value()
+            dur   = self._dur_spin.value()
+            sr    = self._audio_engine.sr
+            s0    = int(start * sr)
+            s1    = min(int((start + dur) * sr), len(self._audio_engine.samples))
+            samples = self._audio_engine.samples[s0:s1]
+            self._spec_t0 = start
+        else:
+            samples = self._audio_engine.samples
+            self._spec_t0 = 0.0
+
+        worker = SpectrogramWorker(samples, self._audio_engine.sr, self._settings(), self)
+        worker.progress.connect(self._on_spec1_progress)
+        worker.error.connect(self._on_spec1_error)
         worker.result.connect(self._on_spec_done)
         self._start(worker)
+
+    def _on_spec1_progress(self, p: int):
+        n_total = 2 if self._audio_engine2 is not None else 1
+        self._status.showMessage(f"Calculando espectrograma 1/{n_total}… {p}%")
+
+    def _on_spec1_error(self, msg: str):
+        self._computing = False
+        self._refresh_buttons()
+        self._err("Error espectrograma 1", msg)
 
     def _on_spec_done(self, qimage: QImage, rgba, times, freqs, S_db):
         self._spec_rgba  = rgba
         self._spec_times = times
         self._spec_freqs = freqs
-        self._spec_S_db  = S_db   # guardamos para la detección
-        self._preview.set_window_sec(self._dur_spin.value())
         self._preview.set_spectrogram(qimage, times, freqs)
-        self._preview.clear_spectrogram2()   # reset until spec2 is ready
-        dur = self._preview.total_duration()
-        self._pos_spin.setMaximum(dur if dur > 0 else 7200.0)
-        self._status.showMessage("Espectrograma listo.")
-        self._refresh_buttons()
+        self._refresh_marks()
 
-        # If a second audio is loaded, compute its spectrogram with the same settings
+        # Si hay segundo audio, calcularlo con los mismos ajustes
         if self._audio_engine2 is not None:
-            self._status.showMessage("Calculando espectrograma 2…")
-            dur2   = self._dur_spin.value()
-            start2 = self._start_spin.value() if self._range_cb.isChecked() else 0.0
-            sr2    = self._audio_engine2.sr
-            s0     = int(start2 * sr2)
-            s1     = min(int((start2 + dur2) * sr2), len(self._audio_engine2.samples))
-            samples2 = self._audio_engine2.samples[s0:s1]
+            self._status.showMessage("Espectrograma 1 listo. Calculando espectrograma 2/2…")
 
-            worker2 = SpectrogramWorker(
-                samples2,
-                self._audio_engine2.sr,
-                self._settings(),
-                self,
-            )
+            if self._range_cb.isChecked():
+                start = self._start_spin.value()
+                dur   = self._dur_spin.value()
+                sr2   = self._audio_engine2.sr
+                s0    = int(start * sr2)
+                s1    = min(int((start + dur) * sr2), len(self._audio_engine2.samples))
+                samples2 = self._audio_engine2.samples[s0:s1]
+            else:
+                samples2 = self._audio_engine2.samples
+
+            worker2 = SpectrogramWorker(samples2, self._audio_engine2.sr, self._settings(), self)
             worker2.progress.connect(
-                lambda p: self._status.showMessage(f"Calculando espectrograma 2… {p}%")
+                lambda p: self._status.showMessage(f"Calculando espectrograma 2/2… {p}%")
             )
-            worker2.error.connect(lambda e: self._err("Error espectrograma 2", e))
+            worker2.error.connect(self._on_spec2_error)
             worker2.result.connect(self._on_spec2_done)
             self._start(worker2)
+        else:
+            # Solo hay un audio: listo
+            self._computing = False
+            self._refresh_buttons()
+            self._status.showMessage("Espectrograma listo. Podés abrir las ventanas.")
+
+    def _on_spec2_error(self, msg: str):
+        self._computing = False
+        self._refresh_buttons()
+        self._err("Error espectrograma 2", msg)
 
     def _on_spec2_done(self, qimage: QImage, rgba, times, freqs, S_db):
         self._spec_rgba2  = rgba
         self._spec_times2 = times
         self._spec_freqs2 = freqs
-        self._preview.set_spectrogram2(qimage, times, freqs)
-        self._status.showMessage(
-            "Ambos espectrogramas listos. Podés ajustar y volver a previsualizar."
-        )
+        self._computing   = False
         self._refresh_buttons()
-
-    # ── Generate video ────────────────────────────────────────────────────────
-
-    def _browse_output(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Guardar video como", "salida.mp4",
-            "MP4 (*.mp4);;AVI (*.avi)"
+        self._status.showMessage(
+            "Ambos espectrogramas listos ✓  Podés abrir las ventanas."
         )
-        if path:
-            self._out_edit.setText(path)
 
-    def _generate_video(self):
+    # ── Detección USV ─────────────────────────────────────────────────────────
+
+    def _run_usv_detection(self):
+        if self._audio_engine is None:
+            return
+
+        if self._range_cb.isChecked():
+            start    = self._start_spin.value()
+            dur      = self._dur_spin.value()
+            sr       = self._audio_engine.sr
+            s0       = int(start * sr)
+            s1       = min(int((start + dur) * sr), len(self._audio_engine.samples))
+            samples  = self._audio_engine.samples[s0:s1]
+            t_offset = start
+        else:
+            samples  = self._audio_engine.samples
+            t_offset = 0.0
+
+        self._usv_btn.setEnabled(False)
+        self._usv_btn.setText("Detectando…")
+        self._status.showMessage("Detectando USVs…")
+        self._usv_events = []
+        self._refresh_marks()
+
+        worker = USVWorker(samples, self._audio_engine.sr, self)
+        worker.status.connect(self._status.showMessage)
+        worker.error.connect(self._on_usv_error)
+        worker.result.connect(lambda evts: self._on_usv_done(evts, t_offset))
+        worker.finished.connect(self._on_usv_finished)
+        self._start(worker)
+
+    def _on_usv_error(self, msg: str):
+        self._err("Error detección USV", msg)
+
+    def _on_usv_finished(self):
+        self._usv_btn.setEnabled(self._audio_engine is not None and not self._computing)
+        self._usv_btn.setText("Detectar USVs")
+
+    def _on_usv_done(self, events: list, t_offset: float):
+        # El detector trabaja sobre el lapso recortado: pasar a tiempo absoluto.
+        self._usv_events = [
+            USVEvent(
+                start_s=ev.start_s + t_offset,
+                end_s=ev.end_s + t_offset,
+                fmin_hz=ev.fmin_hz,
+                fmax_hz=ev.fmax_hz,
+                peak_energy=ev.peak_energy,
+            )
+            for ev in events
+        ]
+        n = len(self._usv_events)
+        self._status.showMessage(
+            f"Detección USV completa: {n} evento{'s' if n != 1 else ''} encontrado{'s' if n != 1 else ''}."
+        )
+        self._refresh_marks()
+
+        if not self._usv_events:
+            return
+
+        if self._registro is None:
+            QMessageBox.information(
+                self, "Sin video",
+                f"Se detectaron {n} evento{'s' if n != 1 else ''}, pero no hay un "
+                "video cargado.\nEl registro se guarda por video: cargá el video "
+                "y volvé a detectar."
+            )
+            return
+
+        destino = self._registro.auto.nombre
+        resp = QMessageBox.question(
+            self, "Guardar detección",
+            f"Se detectaron {n} evento{'s' if n != 1 else ''}.\n"
+            f"¿Guardar en registros/{destino}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if resp == QMessageBox.Yes:
+            self._save_usv_registro(self._usv_events)
+
+    def _save_usv_registro(self, events: list):
+        """Agrega los eventos USV detectados al registro CSV de este video."""
+        if self._registro is None:
+            return
+        audio_name = (os.path.basename(self._audio_engine.path)
+                      if self._audio_engine is not None else '')
+        fecha_hora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        marcas = [
+            Marca(
+                tipo=AUTOMATICO,
+                inicio_s=ev.start_s,
+                fin_s=ev.end_s,
+                freq_min_hz=ev.fmin_hz,
+                freq_max_hz=ev.fmax_hz,
+                peak_energy=ev.peak_energy,
+                offset_audio_s=self._offset.value(),
+                video=self._registro.video_name,
+                audio=audio_name,
+                fecha_hora=fecha_hora,
+            )
+            for ev in events
+        ]
+        try:
+            n_nuevas = self._registro.agregar(marcas)
+            repetidas = len(marcas) - n_nuevas
+            msg = (f"Registro guardado: registros/{self._registro.auto.nombre} "
+                   f"({n_nuevas} nueva{'s' if n_nuevas != 1 else ''}")
+            msg += f", {repetidas} ya estaban)" if repetidas else ")"
+            self._status.showMessage(msg)
+        except Exception as e:
+            self._err("Error al guardar registro", str(e))
+
+    def _export_usv_csv(self, events: list):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar CSV", "eventos_usv.csv",
+            "CSV (*.csv);;Todos (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'inicio_s', 'fin_s', 'duracion_ms',
+                    'freq_min_hz', 'freq_max_hz', 'peak_energy',
+                ])
+                for ev in events:
+                    writer.writerow([
+                        f"{ev.start_s:.4f}",
+                        f"{ev.end_s:.4f}",
+                        f"{ev.duration_ms:.2f}",
+                        f"{ev.fmin_hz:.0f}",
+                        f"{ev.fmax_hz:.0f}",
+                        f"{ev.peak_energy:.6f}",
+                    ])
+            self._status.showMessage(f"CSV exportado: {os.path.basename(path)}")
+        except Exception as e:
+            self._err("Error al exportar", str(e))
+
+    # ── Abrir ventanas duales ─────────────────────────────────────────────────
+
+    def _open_dual_windows(self):
         if self._spec_rgba is None:
             QMessageBox.information(self, "Sin espectrograma",
                                     "Primero presioná Ver espectrograma.")
             return
-        out_path = self._out_edit.text().strip()
-        if not out_path:
-            self._browse_output()
-            out_path = self._out_edit.text().strip()
-        if not out_path:
+        if self._video_engine is None:
+            QMessageBox.information(self, "Sin video",
+                                    "Primero cargá un video.")
             return
 
-        for w in list(self._workers):
-            if isinstance(w, RenderWorker):
-                w.abort()
+        # Cerrar ventanas previas
+        for attr in ('_video_win', '_spec_win', '_spec_win2'):
+            win = getattr(self, attr, None)
+            if win is not None:
+                try:
+                    win.close()
+                except Exception:
+                    pass
 
-        # Use actual freq axis min/max (what librosa returned after filtering).
-        fmin = float(self._spec_freqs[0])  if self._spec_freqs is not None else float(self._fmin.value())
-        fmax = float(self._spec_freqs[-1]) if self._spec_freqs is not None else float(self._fmax.value())
+        offset_sec = self._offset.value()
+        window_sec = self._dur_spin.value()
 
-        # Second spectrogram (optional)
-        fmin2 = float(self._spec_freqs2[0])  if self._spec_freqs2 is not None else None
-        fmax2 = float(self._spec_freqs2[-1]) if self._spec_freqs2 is not None else None
+        # ── Ventana del video ──────────────────────────────────────────────
+        capture_types = [
+            (nombre, markers.color_for_boton_index(i))
+            for i, nombre in enumerate(self._tipos_captura_actuales())
+        ][:VideoPlayerWindow.MAX_TIPOS_CAPTURA]
+        self._video_win = VideoPlayerWindow(self._video_engine, capture_types=capture_types)
+        self._video_win.closed.connect(lambda: setattr(self, '_video_win', None))
+        self._video_win.capture_requested.connect(self._do_capture)
 
-        worker = RenderWorker(
-            video_path=self._video_engine.path,
-            frame_count=self._video_engine.frame_count,
-            fps=self._video_engine.fps,
-            width=self._video_engine.width,
-            height=self._video_engine.height,
-            spec_rgba=self._spec_rgba,
-            spec_duration=self._audio_engine.duration,
-            fmin=fmin,
-            fmax=fmax,
-            overlay_fraction=self._size_sl.value() / 100.0,
-            overlay_height_frac=self._height_sl.value() / 100.0,
-            offset_sec=self._offset.value(),
-            window_sec=self._dur_spin.value(),
-            output_path=out_path,
-            spec_rgba2=self._spec_rgba2,
-            spec_duration2=self._audio_engine2.duration if self._audio_engine2 else None,
-            fmin2=fmin2,
-            fmax2=fmax2,
-            parent=self,
+        # ── Ventana espectrograma 1 ────────────────────────────────────────
+        title1 = "Espectrograma — Audio 1"
+        if self._audio_engine is not None:
+            title1 += f"  ({os.path.basename(self._audio_engine.path)})"
+        self._spec_win = SpecPlayerWindow(
+            spec_rgba  = self._spec_rgba,
+            spec_times = self._spec_times,
+            spec_freqs = self._spec_freqs,
+            window_sec = window_sec,
+            offset_sec = offset_sec,
+            t0_sec     = self._spec_t0,
+            title      = title1,
+        )
+        self._spec_win.closed.connect(lambda: setattr(self, '_spec_win', None))
+        self._video_win.sync_position.connect(self._spec_win.receive_position)
+
+        # ── Ventana espectrograma 2 (solo si hay audio 2) ─────────────────
+        if self._spec_rgba2 is not None:
+            title2 = "Espectrograma — Audio 2"
+            if self._audio_engine2 is not None:
+                title2 += f"  ({os.path.basename(self._audio_engine2.path)})"
+            self._spec_win2 = SpecPlayerWindow(
+                spec_rgba  = self._spec_rgba2,
+                spec_times = self._spec_times2,
+                spec_freqs = self._spec_freqs2,
+                window_sec = window_sec,
+                offset_sec = offset_sec,
+                t0_sec     = self._spec_t0,
+                title      = title2,
+            )
+            self._spec_win2.closed.connect(lambda: setattr(self, '_spec_win2', None))
+            self._video_win.sync_position.connect(self._spec_win2.receive_position)
+
+        # Volcar las marcas ya conocidas a las ventanas recién creadas
+        self._refresh_marks()
+
+        # ── Mostrar ventanas ───────────────────────────────────────────────
+        self._video_win.show()
+        self._spec_win.show()
+        if self._spec_win2 is not None:
+            self._spec_win2.show()
+
+        n = 3 if self._spec_win2 is not None else 2
+        self._status.showMessage(
+            f"{n} ventanas abiertas. Reproducí el video para sincronizar los espectrogramas."
         )
 
-        self._progress.setVisible(True)
-        self._progress.setValue(0)
-        self._gen_btn.setEnabled(False)
-        self._prog_lbl.setText("Renderizando…")
+    # ── Captura de pantalla ───────────────────────────────────────────────────
 
-        worker.progress.connect(self._progress.setValue)
-        worker.status.connect(self._prog_lbl.setText)
-        worker.error.connect(self._on_render_error)
-        worker.done.connect(self._on_render_done)
-        worker.finished.connect(lambda: self._gen_btn.setEnabled(True))
-        self._start(worker)
+    def _color_for_tipo(self, tipo: str):
+        """Color de marca correspondiente a un tipo de captura (por su índice
+        actual en la lista); azul si no tiene tipo asignado, o un color
+        distinto si tiene un tipo que ya no está entre los definidos."""
+        if not tipo:
+            return markers.COLOR_MANUAL
+        tipos = self._tipos_captura_actuales()
+        if tipo in tipos:
+            return markers.color_for_tipo_index(tipos.index(tipo))
+        return markers.COLOR_TIPO_DESCONOCIDO
 
-    def _on_render_done(self, path: str):
-        self._progress.setValue(100)
-        self._prog_lbl.setText(f"Guardado: {os.path.basename(path)}")
-        self._status.showMessage(f"Video generado: {path}")
-        QMessageBox.information(self, "¡Listo!",
-                                f"Video generado exitosamente:\n\n{path}")
+    def _do_capture(self, tipo: str = ''):
+        """
+        Marca manualmente el instante actual: guarda la captura combinada en
+        capturas/, lo anota en el registro del video y dibuja la flecha del
+        color correspondiente al tipo de captura elegido.
+        """
+        wins = [w for w in (self._video_win, self._spec_win, self._spec_win2)
+                if w is not None]
+        if not wins:
+            return
 
-    def _on_render_error(self, msg: str):
-        self._gen_btn.setEnabled(True)
-        self._prog_lbl.setText("Error al renderizar.")
-        self._err("Error al generar video", msg)
+        base = os.path.normpath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+        )
+        path = capture_windows(wins, os.path.join(base, 'capturas'))
+        if not path:
+            self._status.showMessage("Error al guardar la captura.")
+            return
+
+        pos_video = self._video_win.current_pos if self._video_win is not None else 0.0
+        audio_t   = max(0.0, pos_video - self._offset.value())
+
+        self._manual_marks.append((audio_t, tipo))
+        self._manual_marks.sort(key=lambda m: m[0])
+        self._refresh_marks()
+
+        guardado = self._log_marca_manual(pos_video, audio_t, os.path.basename(path), tipo)
+        etiqueta = f" [{tipo}]" if tipo else ""
+        self._status.showMessage(
+            f"✓ Marca{etiqueta} en {audio_t:.3f}s · capturas/{os.path.basename(path)}"
+            + (f" · registros/{guardado}" if guardado else "")
+        )
+
+    def _log_marca_manual(self, pos_video: float, audio_t: float,
+                          captura_filename: str, tipo_captura: str = '') -> str:
+        """Anota la marca manual en el registro CSV de este video."""
+        if self._registro is None:
+            return ''
+
+        audio_name = (os.path.basename(self._audio_engine.path)
+                      if self._audio_engine is not None else '')
+        marca = Marca(
+            tipo=MANUAL,
+            inicio_s=audio_t,
+            fin_s=audio_t,
+            posicion_video_s=pos_video,
+            offset_audio_s=self._offset.value(),
+            video=self._registro.video_name,
+            audio=audio_name,
+            captura=captura_filename,
+            tipo_captura=tipo_captura,
+            fecha_hora=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        )
+        try:
+            self._registro.agregar([marca])
+            return self._registro.manual.nombre
+        except Exception as e:
+            self._err("Error al guardar registro", str(e))
+            return ''
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -884,6 +1107,16 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, title, msg)
 
     def closeEvent(self, event):
+        # Persistir los tipos de captura manual definidos en esta sesión
+        tipos_captura_store.guardar(self._tipos_captura_actuales())
+
+        # Cerrar ventanas duales si están abiertas
+        for win in (self._video_win, self._spec_win, self._spec_win2):
+            if win is not None:
+                try:
+                    win.close()
+                except Exception:
+                    pass
         for w in list(self._workers):
             w.abort()
             w.quit()
