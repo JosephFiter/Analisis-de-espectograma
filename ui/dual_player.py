@@ -29,13 +29,36 @@ from ui.markers import COLOR_AUTO, COLOR_MANUAL, MANUAL_COLORS, draw_marker
 
 class _ScrollingSpecWidget(QWidget):
     """
-    Muestra una ventana deslizante del espectrograma centrada en la posición
-    de reproducción actual.  Soporta uno o dos espectrogramas lado a lado.
+    Ventana deslizante del espectrograma, centrada en la posición de
+    reproducción.
+
+    Zoom
+    ----
+    Ampliar no agranda la imagen que ya se está viendo: recorta una porción
+    más chica del espectrograma original —menos segundos, o una banda de
+    frecuencia más angosta— y la dibuja sobre los mismos píxeles.  Mientras el
+    recorte tenga más celdas que píxeles en pantalla aparece detalle real que
+    antes se perdía al comprimir; pasado ese punto se muestran las celdas del
+    análisis tal cual, sin interpolar.
+
+    Congelado
+    ---------
+    Con la vista congelada el recuadro visible deja de seguir al video, así se
+    puede mirar y ampliar sin que la imagen se mueva.  El cursor rojo sigue
+    marcando el instante real del video.
     """
     ML = 54   # margen izquierdo – etiquetas de frecuencia
     MB = 22   # margen inferior  – etiquetas de tiempo
     MR = 8    # margen derecho
     MT = markers.MARGEN_SUPERIOR   # lugar para las dos filas de flechas
+
+    ZOOM_STEP     = 1.5      # factor por click o muesca de rueda
+    ZOOM_MIN      = 0.25     # alejar hasta 4× la ventana original
+    ZOOM_MAX      = 400.0
+    MIN_WIN_SEC   = 0.002    # 2 ms de ventana temporal mínima
+    MIN_FREQ_SPAN = 500.0    # Hz de banda visible mínima
+
+    viewChanged = pyqtSignal()   # cambió el zoom, el paneo o el congelado
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,11 +66,17 @@ class _ScrollingSpecWidget(QWidget):
         self._times        = None
         self._freqs        = None
         self._pos_sec      = 0.0
-        self._window_sec   = 5.0
+        self._base_win_sec = 5.0    # ventana sin zoom
+        self._zoom         = 1.0    # >1 acerca, <1 aleja
+        self._freq_view    = None   # (lo, hi) en Hz; None = todo el rango
+        self._frozen       = False
+        self._view_center  = 0.0    # centro de la vista mientras está congelada
+        self._drag_from    = None
         self._usv_events   = []
         self._manual_marks = []   # tiempos (s) relativos a este espectrograma
         self.setStyleSheet("background-color:#111;")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setFocusPolicy(Qt.StrongFocus)
 
     # ── API pública ──────────────────────────────────────────────────────────
 
@@ -58,7 +87,7 @@ class _ScrollingSpecWidget(QWidget):
         self.update()
 
     def set_window_sec(self, sec: float):
-        self._window_sec = max(0.1, sec)
+        self._base_win_sec = max(0.1, sec)
         self.update()
 
     def set_pos(self, sec: float):
@@ -73,6 +102,216 @@ class _ScrollingSpecWidget(QWidget):
         """marks: lista de tuplas (tiempo_s, QColor)."""
         self._manual_marks = list(marks) if marks else []
         self.update()
+
+    # ── Geometría de la vista ────────────────────────────────────────────────
+
+    @property
+    def window_sec(self) -> float:
+        """Segundos que abarca la vista con el zoom actual."""
+        return max(self.MIN_WIN_SEC, self._base_win_sec / self._zoom)
+
+    def _cr(self) -> QRect:
+        return QRect(self.ML, self.MT,
+                     max(1, self.width()  - self.ML - self.MR),
+                     max(1, self.height() - self.MT - self.MB))
+
+    def _total_t(self) -> float:
+        if self._times is None or len(self._times) == 0:
+            return 1.0
+        return max(float(self._times[-1]), 1e-6)
+
+    def _freq_full(self):
+        if self._freqs is None or len(self._freqs) == 0:
+            return 0.0, 1.0
+        return float(self._freqs[0]), float(self._freqs[-1])
+
+    def _freq_view_range(self):
+        lo_all, hi_all = self._freq_full()
+        if self._freq_view is None:
+            return lo_all, hi_all
+        lo, hi = self._freq_view
+        return max(lo_all, lo), min(hi_all, hi)
+
+    def _visible_range(self):
+        """(t_start, duración) del recuadro visible, ya recortado al audio."""
+        total   = self._total_t()
+        win     = min(self.window_sec, total)
+        center  = self._view_center if self._frozen else self._pos_sec
+        t_start = min(max(center - win / 2.0, 0.0), max(0.0, total - win))
+        return t_start, max(win, 1e-6)
+
+    def view_info(self) -> dict:
+        """Estado de la vista, para la barra de la ventana."""
+        t_start, win = self._visible_range()
+        f_lo, f_hi   = self._freq_view_range()
+        src_col = 0.0
+        if self._pixmap is not None and self._pixmap.width() > 0:
+            src_col = self._total_t() / self._pixmap.width()
+        return {
+            't_start': t_start, 'win': win,
+            'f_lo': f_lo, 'f_hi': f_hi,
+            'sec_per_px': win / max(1, self._cr().width()),
+            'src_col_sec': src_col,
+            'frozen': self._frozen,
+            'zoom': self._zoom,
+        }
+
+    # ── Zoom y paneo ─────────────────────────────────────────────────────────
+
+    def set_frozen(self, frozen: bool):
+        frozen = bool(frozen)
+        if frozen == self._frozen:
+            return
+        if frozen:
+            t_start, win = self._visible_range()
+            self._view_center = t_start + win / 2.0
+        self._frozen = frozen
+        self.update()
+        self.viewChanged.emit()
+
+    def is_frozen(self) -> bool:
+        return self._frozen
+
+    def zoom_time(self, factor: float, anchor: float = 0.5):
+        """
+        factor > 1 acerca.  `anchor` (0..1) es el punto de la vista que queda
+        quieto; sólo se respeta con la vista congelada, porque mientras sigue
+        al video el cursor manda y siempre queda centrado.
+        """
+        if self._pixmap is None or factor <= 0:
+            return
+        t_start, win = self._visible_range()
+        t_anchor = t_start + anchor * win
+
+        new_zoom = min(max(self._zoom * factor, self.ZOOM_MIN), self.ZOOM_MAX)
+        if self._base_win_sec / new_zoom < self.MIN_WIN_SEC:
+            new_zoom = self._base_win_sec / self.MIN_WIN_SEC
+        if abs(new_zoom - self._zoom) < 1e-9:
+            return
+        self._zoom = new_zoom
+
+        if self._frozen:
+            self._view_center = t_anchor + (0.5 - anchor) * self.window_sec
+            self._clamp_center()
+        self.update()
+        self.viewChanged.emit()
+
+    def zoom_freq(self, factor: float, anchor: float = 0.5):
+        """factor > 1 acerca.  `anchor` 0 = borde de arriba (frecuencia máxima)."""
+        if self._pixmap is None or factor <= 0:
+            return
+        lo_all, hi_all = self._freq_full()
+        full   = max(hi_all - lo_all, 1e-9)
+        lo, hi = self._freq_view_range()
+        span   = max(hi - lo, 1e-9)
+        f_anchor = hi - anchor * span
+
+        new_span = min(max(span / factor, self.MIN_FREQ_SPAN), full)
+        if abs(new_span - span) < 1e-9:
+            return
+        new_hi = f_anchor + anchor * new_span
+        new_lo = new_hi - new_span
+        if new_lo < lo_all:
+            new_lo, new_hi = lo_all, lo_all + new_span
+        if new_hi > hi_all:
+            new_hi, new_lo = hi_all, hi_all - new_span
+        self._freq_view = None if new_span >= full - 1e-6 else (new_lo, new_hi)
+        self.update()
+        self.viewChanged.emit()
+
+    def pan_time(self, d_sec: float):
+        """Corre la vista en el tiempo; congela para que no vuelva sola."""
+        if self._pixmap is None or d_sec == 0:
+            return
+        if not self._frozen:
+            self.set_frozen(True)
+        self._view_center += d_sec
+        self._clamp_center()
+        self.update()
+        self.viewChanged.emit()
+
+    def pan_freq(self, d_hz: float):
+        """Corre la banda visible; sin zoom de frecuencia no hay a dónde ir."""
+        if self._pixmap is None or d_hz == 0 or self._freq_view is None:
+            return
+        lo_all, hi_all = self._freq_full()
+        lo, hi = self._freq_view_range()
+        span = hi - lo
+        lo += d_hz
+        hi += d_hz
+        if lo < lo_all:
+            lo, hi = lo_all, lo_all + span
+        if hi > hi_all:
+            hi, lo = hi_all, hi_all - span
+        self._freq_view = (lo, hi)
+        self.update()
+        self.viewChanged.emit()
+
+    def reset_view(self):
+        self._zoom      = 1.0
+        self._freq_view = None
+        self._frozen    = False
+        self.update()
+        self.viewChanged.emit()
+
+    def _clamp_center(self):
+        total = self._total_t()
+        win   = min(self.window_sec, total)
+        lo    = win / 2.0
+        hi    = max(lo, total - win / 2.0)
+        self._view_center = min(max(self._view_center, lo), hi)
+
+    # ── Mouse y tamaño ───────────────────────────────────────────────────────
+
+    def wheelEvent(self, event):
+        if self._pixmap is None:
+            return
+        steps = event.angleDelta().y() / 120.0
+        if steps == 0:
+            return
+        cr   = self._cr()
+        pos  = event.pos()
+        mods = event.modifiers()
+        if mods & Qt.ControlModifier:
+            frac = (pos.y() - cr.top()) / max(1, cr.height())
+            self.zoom_freq(self.ZOOM_STEP ** steps, min(1.0, max(0.0, frac)))
+        elif mods & Qt.ShiftModifier:
+            _, win = self._visible_range()
+            self.pan_time(-steps * win * 0.2)
+        else:
+            frac = (pos.x() - cr.left()) / max(1, cr.width())
+            self.zoom_time(self.ZOOM_STEP ** steps, min(1.0, max(0.0, frac)))
+        event.accept()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._pixmap is not None:
+            self._drag_from = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_from is None:
+            return
+        cr = self._cr()
+        dx = event.pos().x() - self._drag_from.x()
+        dy = event.pos().y() - self._drag_from.y()
+        self._drag_from = event.pos()
+        if dx:
+            _, win = self._visible_range()
+            self.pan_time(-dx / max(1, cr.width()) * win)
+        if dy:
+            lo, hi = self._freq_view_range()
+            self.pan_freq(dy / max(1, cr.height()) * (hi - lo))
+
+    def mouseReleaseEvent(self, event):
+        self._drag_from = None
+        self.unsetCursor()
+
+    def mouseDoubleClickEvent(self, event):
+        self.reset_view()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.viewChanged.emit()
 
     # ── Dibujo ───────────────────────────────────────────────────────────────
 
@@ -98,33 +337,44 @@ class _ScrollingSpecWidget(QWidget):
             max(1, self.height() - self.MT - self.MB),
         )
 
-        total_t = float(times[-1]) if times is not None and len(times) > 0 else 1.0
-        half    = self._window_sec / 2.0
-        t_start = max(0.0, self._pos_sec - half)
-        t_end   = min(total_t, t_start + self._window_sec)
-        t_start = max(0.0, t_end - self._window_sec)   # re-ancla si t_end tocó el techo
-        win_dur = max(t_end - t_start, 1e-6)
+        total_t          = self._total_t()
+        t_start, win_dur = self._visible_range()
+        t_end            = t_start + win_dur
 
-        # Recortar la porción del pixmap correspondiente a la ventana visible
-        pw  = pixmap.width()
-        x1  = int(t_start / total_t * pw)
-        x2  = max(x1 + 1, int(t_end   / total_t * pw))
-        slice_pix = pixmap.copy(x1, 0, x2 - x1, pixmap.height())
-        scaled = slice_pix.scaled(cr.size(), Qt.IgnoreAspectRatio,
-                                  Qt.SmoothTransformation)
+        lo_all, hi_all = self._freq_full()
+        fmin, fmax     = self._freq_view_range()
+
+        # Recorte del espectrograma original: columnas para el tramo de tiempo
+        # visible, filas para la banda de frecuencia visible.  La imagen viene
+        # de un flipud, así que la fila 0 es la frecuencia máxima y la última
+        # la mínima.
+        pw, ph = pixmap.width(), pixmap.height()
+        x1 = max(0, min(int(t_start / total_t * pw), pw - 1))
+        x2 = max(x1 + 1, min(int(t_end / total_t * pw), pw))
+
+        span_all = max(hi_all - lo_all, 1e-9)
+        y1 = max(0,      min(int((hi_all - fmax) / span_all * ph),       ph - 1))
+        y2 = max(y1 + 1, min(int((hi_all - fmin) / span_all * ph + 0.5), ph))
+
+        slice_pix = pixmap.copy(x1, y1, x2 - x1, y2 - y1)
+        # Si el recorte tiene menos celdas que píxeles hay que agrandarlo: en
+        # ese caso no interpolamos, para mostrar las celdas del análisis tal
+        # cual en vez de un borroneo que aparenta un detalle que no existe.
+        up = max(cr.width() / max(1, x2 - x1), cr.height() / max(1, y2 - y1))
+        scaled = slice_pix.scaled(
+            cr.size(), Qt.IgnoreAspectRatio,
+            Qt.FastTransformation if up > 2.0 else Qt.SmoothTransformation)
         p.drawPixmap(cr.topLeft(), scaled)
 
-        # ── Línea roja del cursor (posición actual) ───────────────────────────
-        frac_pos = (self._pos_sec - t_start) / win_dur
-        x_cursor = cr.left() + int(frac_pos * cr.width())
-        p.setPen(QPen(QColor(220, 50, 50), 1))
-        p.drawLine(x_cursor, cr.top(), x_cursor, cr.bottom())
+        # ── Línea roja del cursor (posición actual del video) ─────────────────
+        # Con la vista congelada el video puede quedar fuera del recuadro.
+        if t_start <= self._pos_sec <= t_end:
+            x_cursor = cr.left() + int((self._pos_sec - t_start) / win_dur * cr.width())
+            p.setPen(QPen(QColor(220, 50, 50), 1))
+            p.drawLine(x_cursor, cr.top(), x_cursor, cr.bottom())
 
         if times is None or freqs is None:
             return
-
-        fmin = float(freqs[0])
-        fmax = float(freqs[-1])
 
         # ── Eventos USV detectados (flecha roja, fila de abajo) ────────────────
         y_auto = markers.base_fila(cr.top(), markers.FILA_AUTO)
@@ -185,17 +435,21 @@ class _ScrollingSpecWidget(QWidget):
         target_n = 2 * min(8, max(4, int(cr.width() / 80)))
 
         def _lbl(t_abs: float, t_rel: float) -> str:
+            # Con la vista ampliada el tiempo absoluto es lo que sirve para
+            # cruzar con el registro, así que se muestra con precisión de ms
+            # en vez del tiempo relativo al borde izquierdo.
             if win_dur < 1.0:
-                return f"{t_rel * 1000:.0f}ms"
+                return f"{t_abs:.3f}s"
             if total_t >= 60:
                 m   = int(t_abs) // 60
                 sec = t_abs - m * 60
                 return f"{m}:{sec:04.1f}"
             return f"{t_abs:.2f}s"
 
-        t_final   = t_start + win_dur
-        final_lbl = _lbl(t_final, win_dur)
-        final_w   = fm.horizontalAdvance(final_lbl)
+        t_final    = t_start + win_dur
+        final_lbl  = _lbl(t_final, win_dur)
+        final_w    = fm.horizontalAdvance(final_lbl)
+        last_right = -10 ** 6
 
         for t_abs in markers.time_ticks(t_start, win_dur, target_n):
             t_rel = t_abs - t_start
@@ -205,11 +459,15 @@ class _ScrollingSpecWidget(QWidget):
 
             lbl = _lbl(t_abs, t_rel)
             tw  = fm.horizontalAdvance(lbl)
-            # No dibujar si se solaparía con la etiqueta del tiempo final.
+            # No dibujar si se solaparía con la etiqueta anterior o con la del
+            # tiempo final: al ampliar, las etiquetas se alargan y se pisan.
+            if x - tw // 2 < last_right + 6:
+                continue
             if x + tw // 2 > cr.right() - final_w // 2 - 6:
                 continue
             p.setPen(light)
             p.drawText(x - tw // 2, cr.bottom() + self.MB - 4, lbl)
+            last_right = x + tw // 2
 
         # Tiempo final de la ventana, siempre visible en el borde derecho.
         p.setPen(QPen(gray, 1))
@@ -246,13 +504,13 @@ class SpecPlayerWindow(QWidget):
                  parent=None):
         super().__init__(parent, Qt.Window)
         self.setWindowTitle(title)
-        self.resize(900, 300)
+        self.resize(900, 340)
         self._offset_sec = offset_sec
         self._t0_sec     = t0_sec
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(0)
+        layout.setSpacing(3)
 
         self._spec_widget = _ScrollingSpecWidget()
         self._spec_widget.set_window_sec(window_sec)
@@ -262,6 +520,132 @@ class SpecPlayerWindow(QWidget):
         self._spec_widget.set_spectrogram(qimage, spec_times, spec_freqs)
 
         layout.addWidget(self._spec_widget)
+        layout.addLayout(self._build_toolbar())
+
+        self._spec_widget.viewChanged.connect(self._update_info)
+        self._install_shortcuts()
+        self._update_info()
+
+    # ── Barra de zoom ────────────────────────────────────────────────────────
+
+    def _build_toolbar(self) -> QHBoxLayout:
+        w   = self._spec_widget
+        bar = QHBoxLayout()
+        bar.setSpacing(3)
+
+        def _btn(text, tip, slot, width=28):
+            b = QPushButton(text)
+            b.setFixedSize(width, 26)
+            b.setToolTip(tip)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setAutoRepeat(True)
+            b.setAutoRepeatDelay(400)
+            b.setAutoRepeatInterval(90)
+            b.clicked.connect(slot)
+            return b
+
+        self._freeze_btn = QPushButton("⏸  Congelar")
+        self._freeze_btn.setCheckable(True)
+        self._freeze_btn.setFixedSize(104, 26)
+        self._freeze_btn.setFocusPolicy(Qt.NoFocus)
+        self._freeze_btn.setToolTip(
+            "Congela la vista (F): deja de seguir al video para poder mirar y\n"
+            "ampliar sin que la imagen se mueva. El cursor rojo sigue marcando\n"
+            "el instante real del video.\n"
+            "Arrastrar el espectrograma con el mouse también congela."
+        )
+        self._freeze_btn.toggled.connect(w.set_frozen)
+        bar.addWidget(self._freeze_btn)
+
+        bar.addSpacing(10)
+        zoom_tip = (
+            "Zoom temporal (rueda del mouse, o + / −).\n"
+            "No agranda la imagen: recorta menos segundos del espectrograma\n"
+            "original y los dibuja sobre el mismo ancho, así aparece el detalle\n"
+            "que antes se perdía al comprimir."
+        )
+        t_lbl = QLabel("Tiempo:")
+        t_lbl.setToolTip(zoom_tip)
+        bar.addWidget(t_lbl)
+        bar.addWidget(_btn("−", "Alejar en el tiempo  (−  ·  rueda abajo)",
+                           lambda: w.zoom_time(1.0 / w.ZOOM_STEP)))
+        bar.addWidget(_btn("+", "Acercar en el tiempo  (+  ·  rueda arriba)",
+                           lambda: w.zoom_time(w.ZOOM_STEP)))
+
+        bar.addSpacing(10)
+        freq_tip = (
+            "Zoom en frecuencia (Ctrl + rueda del mouse).\n"
+            "Muestra sólo una banda del espectrograma, estirada sobre todo el\n"
+            "alto de la ventana."
+        )
+        f_lbl = QLabel("Frec.:")
+        f_lbl.setToolTip(freq_tip)
+        bar.addWidget(f_lbl)
+        bar.addWidget(_btn("−", "Ver una banda de frecuencia más ancha  (Ctrl+rueda abajo)",
+                           lambda: w.zoom_freq(1.0 / w.ZOOM_STEP)))
+        bar.addWidget(_btn("+", "Acercar sobre la banda de frecuencia  (Ctrl+rueda arriba)",
+                           lambda: w.zoom_freq(w.ZOOM_STEP)))
+
+        bar.addSpacing(10)
+        reset = QPushButton("⟲  Reset")
+        reset.setFixedSize(78, 26)
+        reset.setFocusPolicy(Qt.NoFocus)
+        reset.setToolTip("Vuelve a la vista original y descongela\n(tecla 0, o doble click sobre el espectrograma)")
+        reset.clicked.connect(self._reset_view)
+        bar.addWidget(reset)
+
+        bar.addStretch()
+
+        self._info_lbl = QLabel()
+        self._info_lbl.setStyleSheet(
+            "font-family:Courier; font-size:11px; color:#bbb;")
+        self._info_lbl.setToolTip(
+            "Ventana de tiempo visible · banda de frecuencia visible ·\n"
+            "resolución en pantalla.\n"
+            "«detalle máximo» avisa que ya se está viendo una celda del análisis\n"
+            "por píxel: ampliar más no agrega información. Para más detalle hay\n"
+            "que recalcular con una ventana FFT y un hop más chicos."
+        )
+        bar.addWidget(self._info_lbl)
+        return bar
+
+    def _install_shortcuts(self):
+        # Sin flechas a propósito: en la ventana del video ← / → son el paso
+        # por frame, y que signifiquen otra cosa acá se presta a confusión.
+        # Para correr la vista están el arrastre y Shift + rueda.
+        w = self._spec_widget
+        binds = [
+            (Qt.Key_Plus,   lambda: w.zoom_time(w.ZOOM_STEP)),
+            (Qt.Key_Equal,  lambda: w.zoom_time(w.ZOOM_STEP)),
+            (Qt.Key_Minus,  lambda: w.zoom_time(1.0 / w.ZOOM_STEP)),
+            (Qt.Key_0,      self._reset_view),
+            (Qt.Key_F,      self._freeze_btn.toggle),
+        ]
+        for key, slot in binds:
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.WindowShortcut)
+            sc.setAutoRepeat(True)
+            sc.activated.connect(slot)
+
+    def _reset_view(self):
+        self._spec_widget.reset_view()
+
+    def _update_info(self):
+        info = self._spec_widget.view_info()
+
+        # El congelado puede haber cambiado desde el widget (al arrastrar).
+        self._freeze_btn.setChecked(info['frozen'])
+        self._freeze_btn.setText(
+            "⏸  Congelada" if info['frozen'] else "⏸  Congelar")
+
+        win     = info['win']
+        win_txt = f"{win * 1000:.0f} ms" if win < 1.0 else f"{win:.2f} s"
+        txt = (f"ventana {win_txt}"
+               f"  ·  {info['f_lo'] / 1000.0:.0f}–{info['f_hi'] / 1000.0:.0f} kHz"
+               f"  ·  {info['sec_per_px'] * 1000.0:.3f} ms/px")
+        if 0 < info['src_col_sec'] and info['sec_per_px'] <= info['src_col_sec']:
+            txt += "  ·  detalle máximo"
+        self._info_lbl.setText(txt)
 
     def receive_position(self, video_t: float):
         """Llamado por VideoPlayerWindow en cada tick de reproducción."""
