@@ -26,6 +26,7 @@ from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
 from workers.spectrogram_worker import SpectrogramWorker
 from workers.usv_worker import USVWorker
+from workers.strong_worker import StrongWorker
 from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow, capture_windows
 from ui import markers
 
@@ -260,51 +261,21 @@ class MainWindow(QMainWindow):
         self._per_chan_cb.toggled.connect(self._on_per_chan_toggled)
         gl2.addWidget(self._per_chan_cb)
 
-        # ── Time range selector ────────────────────────────────────────────
-        self._range_cb = QCheckBox("Analizar lapso específico")
-        gl2.addWidget(self._range_cb)
-
+        # ── Ventana visible en las ventanas duales ─────────────────────────
+        _dur_tip = ("Segundos que abarca la vista del espectrograma en las\n"
+                    "ventanas del Paso 3. El análisis siempre cubre todo el audio.")
         dur_row = QHBoxLayout()
-        dur_row.addWidget(QLabel("Duración (s):"))
+        _dur_lbl = QLabel("Duración (s):")
+        _dur_lbl.setToolTip(_dur_tip)
+        dur_row.addWidget(_dur_lbl)
         self._dur_spin = QDoubleSpinBox()
         self._dur_spin.setRange(0.1, 7200.0)
         self._dur_spin.setSingleStep(0.5)
         self._dur_spin.setDecimals(1)
         self._dur_spin.setValue(2.5)
+        self._dur_spin.setToolTip(_dur_tip)
         dur_row.addWidget(self._dur_spin)
         gl2.addLayout(dur_row)
-
-        self._range_widget = QWidget()
-        rv = QVBoxLayout(self._range_widget)
-        rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(3)
-
-        start_row = QHBoxLayout()
-        start_row.addWidget(QLabel("Inicio (s):"))
-        self._start_spin = QDoubleSpinBox()
-        self._start_spin.setRange(0.0, 7200.0)
-        self._start_spin.setSingleStep(1.0)
-        self._start_spin.setDecimals(1)
-        self._start_spin.setValue(0.0)
-        start_row.addWidget(self._start_spin)
-        rv.addLayout(start_row)
-
-        self._range_lbl = QLabel("0.0 s  →  2.0 s")
-        self._range_lbl.setStyleSheet("font-size:11px; color:#aaa;")
-        rv.addWidget(self._range_lbl)
-
-        self._start_sl = QSlider(Qt.Horizontal)
-        self._start_sl.setRange(0, 1000)
-        self._start_sl.setValue(0)
-        rv.addWidget(self._start_sl)
-
-        gl2.addWidget(self._range_widget)
-        self._range_widget.setEnabled(False)
-
-        self._range_cb.toggled.connect(self._range_widget.setEnabled)
-        self._start_sl.valueChanged.connect(self._update_range_lbl)
-        self._dur_spin.valueChanged.connect(self._update_range_lbl)
-        self._start_spin.valueChanged.connect(self._on_start_spin_changed)
 
         self._prev_btn = QPushButton("Ver espectrograma")
         self._prev_btn.setFixedHeight(30)
@@ -317,6 +288,17 @@ class MainWindow(QMainWindow):
         self._usv_btn.setEnabled(False)
         self._usv_btn.clicked.connect(self._run_usv_detection)
         gl2.addWidget(self._usv_btn)
+
+        self._strong_btn = QPushButton("Detección fuertes")
+        self._strong_btn.setFixedHeight(30)
+        self._strong_btn.setEnabled(False)
+        self._strong_btn.setToolTip(
+            "Busca los sonidos fuertes: trazos tonales bien marcados sobre el\n"
+            "fondo, como las vocalizaciones que se ven a simple vista.\n"
+            "Descarta golpes y ruido de banda ancha."
+        )
+        self._strong_btn.clicked.connect(self._run_strong_detection)
+        gl2.addWidget(self._strong_btn)
         lv.addWidget(g2)
 
         # Step 3 ─ abrir ventanas
@@ -608,8 +590,6 @@ class MainWindow(QMainWindow):
         dur = engine.duration
         self._dur_spin.setMaximum(dur)
         self._dur_spin.setValue(min(self._dur_spin.value(), dur))
-        self._start_sl.setValue(0)
-        self._update_range_lbl()
         self._refresh_buttons()
 
     def _open_audio2(self):
@@ -655,39 +635,13 @@ class MainWindow(QMainWindow):
             self._thresh_spin.setRange(-120, 0)
             self._thresh_spin.setValue(-40)
 
-    def _update_range_lbl(self):
-        if self._audio_engine is None:
-            return
-        dur = self._dur_spin.value()
-        total = self._audio_engine.duration
-        max_start = max(0.0, total - dur)
-        start = (self._start_sl.value() / 1000.0) * max_start
-        end = min(start + dur, total)
-        self._range_lbl.setText(f"{start:.1f} s  →  {end:.1f} s")
-        self._start_spin.blockSignals(True)
-        self._start_spin.setMaximum(max_start)
-        self._start_spin.setValue(start)
-        self._start_spin.blockSignals(False)
-
-    def _on_start_spin_changed(self, val: float):
-        if self._audio_engine is None:
-            return
-        dur = self._dur_spin.value()
-        total = self._audio_engine.duration
-        max_start = max(0.0, total - dur)
-        slider_val = int((val / max_start) * 1000) if max_start > 0 else 0
-        self._start_sl.blockSignals(True)
-        self._start_sl.setValue(slider_val)
-        self._start_sl.blockSignals(False)
-        end = min(val + dur, total)
-        self._range_lbl.setText(f"{val:.1f} s  →  {end:.1f} s")
-
     def _refresh_buttons(self):
         has_audio = self._audio_engine is not None
         has_video = self._video_engine is not None
         has_spec  = self._spec_rgba is not None
         self._prev_btn.setEnabled(has_audio and not self._computing)
         self._usv_btn.setEnabled(has_audio and not self._computing)
+        self._strong_btn.setEnabled(has_audio and not self._computing)
         self._gen_btn.setEnabled(has_audio and has_video and has_spec
                                  and not self._computing)
 
@@ -719,17 +673,8 @@ class MainWindow(QMainWindow):
         )
         self._status.showMessage(f"Calculando espectrograma 1/{n_total}…")
 
-        if self._range_cb.isChecked():
-            start = self._start_spin.value()
-            dur   = self._dur_spin.value()
-            sr    = self._audio_engine.sr
-            s0    = int(start * sr)
-            s1    = min(int((start + dur) * sr), len(self._audio_engine.samples))
-            samples = self._audio_engine.samples[s0:s1]
-            self._spec_t0 = start
-        else:
-            samples = self._audio_engine.samples
-            self._spec_t0 = 0.0
+        samples = self._audio_engine.samples
+        self._spec_t0 = 0.0
 
         worker = SpectrogramWorker(samples, self._audio_engine.sr, self._settings(), self)
         worker.progress.connect(self._on_spec1_progress)
@@ -757,15 +702,7 @@ class MainWindow(QMainWindow):
         if self._audio_engine2 is not None:
             self._status.showMessage("Espectrograma 1 listo. Calculando espectrograma 2/2…")
 
-            if self._range_cb.isChecked():
-                start = self._start_spin.value()
-                dur   = self._dur_spin.value()
-                sr2   = self._audio_engine2.sr
-                s0    = int(start * sr2)
-                s1    = min(int((start + dur) * sr2), len(self._audio_engine2.samples))
-                samples2 = self._audio_engine2.samples[s0:s1]
-            else:
-                samples2 = self._audio_engine2.samples
+            samples2 = self._audio_engine2.samples
 
             worker2 = SpectrogramWorker(samples2, self._audio_engine2.sr, self._settings(), self)
             worker2.progress.connect(
@@ -801,17 +738,8 @@ class MainWindow(QMainWindow):
         if self._audio_engine is None:
             return
 
-        if self._range_cb.isChecked():
-            start    = self._start_spin.value()
-            dur      = self._dur_spin.value()
-            sr       = self._audio_engine.sr
-            s0       = int(start * sr)
-            s1       = min(int((start + dur) * sr), len(self._audio_engine.samples))
-            samples  = self._audio_engine.samples[s0:s1]
-            t_offset = start
-        else:
-            samples  = self._audio_engine.samples
-            t_offset = 0.0
+        samples  = self._audio_engine.samples
+        t_offset = 0.0
 
         self._usv_btn.setEnabled(False)
         self._usv_btn.setText("Detectando…")
@@ -868,6 +796,80 @@ class MainWindow(QMainWindow):
             self, "Guardar detección",
             f"Se detectaron {n} evento{'s' if n != 1 else ''}.\n"
             f"¿Guardar en registros/{destino}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if resp == QMessageBox.Yes:
+            self._save_usv_registro(self._usv_events)
+
+    # ── Detección de sonidos fuertes ──────────────────────────────
+
+    def _run_strong_detection(self):
+        """Busca trazos tonales fuertes; ver core/strong_detector.py."""
+        if self._audio_engine is None:
+            return
+
+        self._strong_btn.setEnabled(False)
+        self._strong_btn.setText("Detectando…")
+        self._status.showMessage("Detectando sonidos fuertes…")
+        self._usv_events = []
+        self._refresh_marks()
+
+        worker = StrongWorker(self._audio_engine.samples,
+                              self._audio_engine.sr, self)
+        worker.progress.connect(
+            lambda p: self._status.showMessage(f"Detectando sonidos fuertes… {p}%"))
+        worker.error.connect(self._on_strong_error)
+        worker.result.connect(self._on_strong_done)
+        worker.finished.connect(self._on_strong_finished)
+        self._start(worker)
+
+    def _on_strong_error(self, msg: str):
+        self._err("Error detección de sonidos fuertes", msg)
+
+    def _on_strong_finished(self):
+        self._strong_btn.setEnabled(self._audio_engine is not None
+                                    and not self._computing)
+        self._strong_btn.setText("Detección fuertes")
+
+    def _on_strong_done(self, events: list):
+        # Se dibujan con las mismas flechas que los USV.
+        self._usv_events = [
+            USVEvent(
+                start_s=ev.start_s,
+                end_s=ev.end_s,
+                fmin_hz=ev.fmin_hz,
+                fmax_hz=ev.fmax_hz,
+                peak_energy=ev.peak_energy,
+            )
+            for ev in events
+        ]
+        n = len(self._usv_events)
+        self._status.showMessage(
+            f"Detección de sonidos fuertes: {n} evento{'s' if n != 1 else ''} "
+            f"encontrado{'s' if n != 1 else ''}."
+        )
+        self._refresh_marks()
+
+        if not self._usv_events:
+            QMessageBox.information(
+                self, "Sin resultados",
+                "No se encontró ningún sonido fuerte en este audio."
+            )
+            return
+
+        if self._registro is None:
+            QMessageBox.information(
+                self, "Sin video",
+                f"Se detectaron {n} evento{'s' if n != 1 else ''}, pero no hay un "
+                "video cargado.\nEl registro se guarda por video: cargá el video "
+                "y volvé a detectar."
+            )
+            return
+
+        resp = QMessageBox.question(
+            self, "Guardar detección",
+            f"Se detectaron {n} sonido{'s' if n != 1 else ''} fuerte{'s' if n != 1 else ''}.\n"
+            f"¿Guardar en registros/{self._registro.auto.nombre}?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
         )
         if resp == QMessageBox.Yes:

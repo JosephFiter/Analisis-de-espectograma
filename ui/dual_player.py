@@ -41,11 +41,12 @@ class _ScrollingSpecWidget(QWidget):
     antes se perdía al comprimir; pasado ese punto se muestran las celdas del
     análisis tal cual, sin interpolar.
 
-    Congelado
-    ---------
-    Con la vista congelada el recuadro visible deja de seguir al video, así se
-    puede mirar y ampliar sin que la imagen se mueva.  El cursor rojo sigue
-    marcando el instante real del video.
+    Paneo
+    -----
+    Al arrastrar el espectrograma con el mouse (o Shift + rueda) el recuadro
+    visible deja de seguir al video, así se puede mirar y ampliar sin que la
+    imagen se mueva.  El cursor rojo sigue marcando el instante real del video.
+    El botón Reset (tecla 0) vuelve a la vista original y a seguir al video.
     """
     ML = 54   # margen izquierdo – etiquetas de frecuencia
     MB = 22   # margen inferior  – etiquetas de tiempo
@@ -381,9 +382,9 @@ class _ScrollingSpecWidget(QWidget):
         for ev in self._usv_events:
             if ev.end_s < t_start or ev.start_s > t_end:
                 continue
+            # La flecha va sobre el arranque del evento, no sobre el medio.
             x0 = cr.left() + int(max(0.0, (ev.start_s - t_start) / win_dur) * cr.width())
-            x1 = cr.left() + int(min(1.0, (ev.end_s   - t_start) / win_dur) * cr.width())
-            draw_marker(p, (x0 + x1) // 2, y_auto, COLOR_AUTO)
+            draw_marker(p, x0, y_auto, COLOR_AUTO)
 
         # ── Marcas manuales (flecha con el color de su tipo, fila de arriba) ──
         y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)
@@ -544,20 +545,6 @@ class SpecPlayerWindow(QWidget):
             b.clicked.connect(slot)
             return b
 
-        self._freeze_btn = QPushButton("⏸  Congelar")
-        self._freeze_btn.setCheckable(True)
-        self._freeze_btn.setFixedSize(104, 26)
-        self._freeze_btn.setFocusPolicy(Qt.NoFocus)
-        self._freeze_btn.setToolTip(
-            "Congela la vista (F): deja de seguir al video para poder mirar y\n"
-            "ampliar sin que la imagen se mueva. El cursor rojo sigue marcando\n"
-            "el instante real del video.\n"
-            "Arrastrar el espectrograma con el mouse también congela."
-        )
-        self._freeze_btn.toggled.connect(w.set_frozen)
-        bar.addWidget(self._freeze_btn)
-
-        bar.addSpacing(10)
         zoom_tip = (
             "Zoom temporal (rueda del mouse, o + / −).\n"
             "No agranda la imagen: recorta menos segundos del espectrograma\n"
@@ -567,9 +554,20 @@ class SpecPlayerWindow(QWidget):
         t_lbl = QLabel("Tiempo:")
         t_lbl.setToolTip(zoom_tip)
         bar.addWidget(t_lbl)
-        bar.addWidget(_btn("−", "Alejar en el tiempo  (−  ·  rueda abajo)",
+        bar.addWidget(_btn("−", "Alejar en el tiempo: ver más segundos  (−  ·  rueda abajo)",
                            lambda: w.zoom_time(1.0 / w.ZOOM_STEP)))
-        bar.addWidget(_btn("+", "Acercar en el tiempo  (+  ·  rueda arriba)",
+
+        self._win_lbl = QLabel()
+        self._win_lbl.setAlignment(Qt.AlignCenter)
+        self._win_lbl.setMinimumWidth(64)
+        self._win_lbl.setStyleSheet(
+            "font-family:Courier; font-size:11px; color:#ddd;")
+        self._win_lbl.setToolTip(
+            "Segundos de audio que se están viendo en pantalla ahora mismo."
+        )
+        bar.addWidget(self._win_lbl)
+
+        bar.addWidget(_btn("+", "Acercar en el tiempo: ver menos segundos  (+  ·  rueda arriba)",
                            lambda: w.zoom_time(w.ZOOM_STEP)))
 
         bar.addSpacing(10)
@@ -590,7 +588,7 @@ class SpecPlayerWindow(QWidget):
         reset = QPushButton("⟲  Reset")
         reset.setFixedSize(78, 26)
         reset.setFocusPolicy(Qt.NoFocus)
-        reset.setToolTip("Vuelve a la vista original y descongela\n(tecla 0, o doble click sobre el espectrograma)")
+        reset.setToolTip("Vuelve a la vista original y a seguir al video\n(tecla 0, o doble click sobre el espectrograma)")
         reset.clicked.connect(self._reset_view)
         bar.addWidget(reset)
 
@@ -600,7 +598,7 @@ class SpecPlayerWindow(QWidget):
         self._info_lbl.setStyleSheet(
             "font-family:Courier; font-size:11px; color:#bbb;")
         self._info_lbl.setToolTip(
-            "Ventana de tiempo visible · banda de frecuencia visible ·\n"
+            "Banda de frecuencia visible ·\n"
             "resolución en pantalla.\n"
             "«detalle máximo» avisa que ya se está viendo una celda del análisis\n"
             "por píxel: ampliar más no agrega información. Para más detalle hay\n"
@@ -619,7 +617,6 @@ class SpecPlayerWindow(QWidget):
             (Qt.Key_Equal,  lambda: w.zoom_time(w.ZOOM_STEP)),
             (Qt.Key_Minus,  lambda: w.zoom_time(1.0 / w.ZOOM_STEP)),
             (Qt.Key_0,      self._reset_view),
-            (Qt.Key_F,      self._freeze_btn.toggle),
         ]
         for key, slot in binds:
             sc = QShortcut(QKeySequence(key), self)
@@ -633,15 +630,16 @@ class SpecPlayerWindow(QWidget):
     def _update_info(self):
         info = self._spec_widget.view_info()
 
-        # El congelado puede haber cambiado desde el widget (al arrastrar).
-        self._freeze_btn.setChecked(info['frozen'])
-        self._freeze_btn.setText(
-            "⏸  Congelada" if info['frozen'] else "⏸  Congelar")
+        win = info['win']
+        if win >= 10.0:
+            win_txt = f"{win:.1f} s"
+        elif win >= 1.0:
+            win_txt = f"{win:.2f} s"
+        else:
+            win_txt = f"{win:.3f} s"
+        self._win_lbl.setText(win_txt)
 
-        win     = info['win']
-        win_txt = f"{win * 1000:.0f} ms" if win < 1.0 else f"{win:.2f} s"
-        txt = (f"ventana {win_txt}"
-               f"  ·  {info['f_lo'] / 1000.0:.0f}–{info['f_hi'] / 1000.0:.0f} kHz"
+        txt = (f"{info['f_lo'] / 1000.0:.0f}–{info['f_hi'] / 1000.0:.0f} kHz"
                f"  ·  {info['sec_per_px'] * 1000.0:.3f} ms/px")
         if 0 < info['src_col_sec'] and info['sec_per_px'] <= info['src_col_sec']:
             txt += "  ·  detalle máximo"

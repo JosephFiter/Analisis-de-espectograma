@@ -226,7 +226,8 @@ class SpectrogramPreview(QWidget):
             p.setPen(QPen(COLOR_AUTO, 2))
             p.setBrush(Qt.NoBrush)
             p.drawRect(x0, y_top, x1 - x0, y_bottom - y_top)
-            draw_marker(p, (x0 + x1) // 2, y_auto, COLOR_AUTO)
+            # La flecha va sobre el arranque del evento, no sobre el medio.
+            draw_marker(p, x0, y_auto, COLOR_AUTO)
 
         # ── Marcas manuales: línea + flecha con el color de su tipo ───────────
         y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)
