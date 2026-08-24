@@ -20,7 +20,8 @@ from PyQt5.QtCore import Qt, QTimer, QRect, QPoint, pyqtSignal
 from core.spectrogram_engine import SpectrogramEngine
 from core.usv_detector import USVEvent
 from ui import markers
-from ui.markers import COLOR_AUTO, COLOR_MANUAL, MANUAL_COLORS, draw_marker
+from ui.markers import (COLOR_AUTO, COLOR_FUERTE, COLOR_MANUAL,
+                        MANUAL_COLORS, draw_marker)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,6 +75,7 @@ class _ScrollingSpecWidget(QWidget):
         self._view_center  = 0.0    # centro de la vista mientras está congelada
         self._drag_from    = None
         self._usv_events   = []
+        self._strong_events = []
         self._manual_marks = []   # tiempos (s) relativos a este espectrograma
         self.setStyleSheet("background-color:#111;")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -97,6 +99,10 @@ class _ScrollingSpecWidget(QWidget):
 
     def set_usv_events(self, events: list):
         self._usv_events = events if events else []
+        self.update()
+
+    def set_strong_events(self, events: list):
+        self._strong_events = events if events else []
         self.update()
 
     def set_manual_marks(self, marks: list):
@@ -377,14 +383,18 @@ class _ScrollingSpecWidget(QWidget):
         if times is None or freqs is None:
             return
 
-        # ── Eventos USV detectados (flecha roja, fila de abajo) ────────────────
-        y_auto = markers.base_fila(cr.top(), markers.FILA_AUTO)
-        for ev in self._usv_events:
-            if ev.end_s < t_start or ev.start_s > t_end:
-                continue
-            # La flecha va sobre el arranque del evento, no sobre el medio.
-            x0 = cr.left() + int(max(0.0, (ev.start_s - t_start) / win_dur) * cr.width())
-            draw_marker(p, x0, y_auto, COLOR_AUTO)
+        # ── Detecciones automáticas, cada detector en su fila y su color ──────
+        for eventos, color, fila in (
+            (self._usv_events,    COLOR_AUTO,   markers.FILA_AUTO),
+            (self._strong_events, COLOR_FUERTE, markers.FILA_FUERTE),
+        ):
+            y_fila = markers.base_fila(cr.top(), fila)
+            for ev in eventos:
+                if ev.end_s < t_start or ev.start_s > t_end:
+                    continue
+                # La flecha va sobre el arranque del evento, no sobre el medio.
+                x0 = cr.left() + int(max(0.0, (ev.start_s - t_start) / win_dur) * cr.width())
+                draw_marker(p, x0, y_fila, color)
 
         # ── Marcas manuales (flecha con el color de su tipo, fila de arriba) ──
         y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)
@@ -650,9 +660,9 @@ class SpecPlayerWindow(QWidget):
         spec_t = max(0.0, video_t - self._offset_sec - self._t0_sec)
         self._spec_widget.set_pos(spec_t)
 
-    def set_usv_events(self, events: list):
-        """Eventos USV (tiempo absoluto del audio) → flechas rojas."""
-        self._spec_widget.set_usv_events([
+    def _a_coords_imagen(self, events: list) -> list:
+        """Pasa eventos de tiempo absoluto del audio a tiempo de esta imagen."""
+        return [
             USVEvent(
                 start_s=ev.start_s - self._t0_sec,
                 end_s=ev.end_s - self._t0_sec,
@@ -661,7 +671,15 @@ class SpecPlayerWindow(QWidget):
                 peak_energy=ev.peak_energy,
             )
             for ev in (events or [])
-        ])
+        ]
+
+    def set_usv_events(self, events: list):
+        """Eventos USV (tiempo absoluto del audio) → flechas rojas."""
+        self._spec_widget.set_usv_events(self._a_coords_imagen(events))
+
+    def set_strong_events(self, events: list):
+        """Sonidos fuertes (tiempo absoluto del audio) → flechas ámbar."""
+        self._spec_widget.set_strong_events(self._a_coords_imagen(events))
 
     def set_manual_marks(self, marks: list):
         """Marcas manuales: lista de (tiempo absoluto del audio, QColor)."""

@@ -1,8 +1,14 @@
 """
-Registro persistente de marcas: dos archivos CSV por cada video analizado.
+Registro persistente de marcas: tres archivos CSV por cada video analizado.
 
-    registros/<video>.csv       marcas manuales (las que hace el usuario)
-    registros/<video>auto.csv   detecciones automáticas del USVDetector
+    registros/<video>.csv          marcas manuales (las que hace el usuario)
+    registros/<video>auto.csv      detecciones del USVDetector
+    registros/<video>fuertes.csv   detecciones del StrongDetector
+
+Los dos detectores automáticos van a archivos distintos a propósito: buscan
+cosas diferentes (coincidencia entre dos bandas fijas uno, trazos tonales
+marcados el otro), así que mezclar sus resultados en un mismo CSV haría
+imposible saber después cuál encontró cada evento.
 
 Convención de tiempos
 ---------------------
@@ -25,6 +31,9 @@ from typing import List, Optional
 
 MANUAL     = 'manual'
 AUTOMATICO = 'automatico'
+FUERTE     = 'fuerte'
+
+TIPOS = (MANUAL, AUTOMATICO, FUERTE)
 
 # Cada archivo guarda sólo las columnas que le sirven.
 _HEADER_MANUAL = [
@@ -36,6 +45,9 @@ _HEADER_AUTO = [
     'freq_min_hz', 'freq_max_hz', 'peak_energy',
     'video', 'audio', 'fecha_hora',
 ]
+# Los sonidos fuertes guardan lo mismo que las detecciones USV: el archivo
+# aparte ya dice de qué detector vienen.
+_HEADER_FUERTE = list(_HEADER_AUTO)
 
 # Dos marcas del mismo tipo separadas por menos de esto son la misma.
 _TOL_S = 0.001
@@ -71,6 +83,10 @@ class Marca:
     @property
     def es_manual(self) -> bool:
         return self.tipo == MANUAL
+
+    @property
+    def es_fuerte(self) -> bool:
+        return self.tipo == FUERTE
 
     @property
     def duracion_ms(self) -> float:
@@ -113,7 +129,7 @@ class Marca:
         fin = _f(d.get('fin_s'))
         # Los CSV viejos traían una columna 'tipo'; si está, se respeta.
         tipo = (d.get('tipo') or '').strip()
-        if tipo not in (MANUAL, AUTOMATICO):
+        if tipo not in TIPOS:
             tipo = tipo_por_defecto
         return cls(
             tipo=tipo,
@@ -199,10 +215,13 @@ class _ArchivoMarcas:
 
 class RegistroVideo:
     """
-    Los dos registros de un video: manuales y automáticas, en archivos aparte.
+    Los tres registros de un video, cada uno en su archivo:
+    marcas manuales, detecciones USV y sonidos fuertes.
 
     Los nombres se derivan del nombre del video, sin la extensión:
-        rata_01.avi  →  registros/rata_01.csv  +  registros/rata_01auto.csv
+        rata_01.avi  →  registros/rata_01.csv
+                        registros/rata_01auto.csv
+                        registros/rata_01fuertes.csv
 
     Al cargar un video ya analizado en otra sesión los archivos se encuentran
     solos y las marcas vuelven a aparecer sobre el espectrograma.
@@ -218,6 +237,8 @@ class RegistroVideo:
             os.path.join(carpeta, stem + '.csv'), MANUAL, _HEADER_MANUAL)
         self.auto = _ArchivoMarcas(
             os.path.join(carpeta, stem + 'auto.csv'), AUTOMATICO, _HEADER_AUTO)
+        self.fuertes = _ArchivoMarcas(
+            os.path.join(carpeta, stem + 'fuertes.csv'), FUERTE, _HEADER_FUERTE)
 
     @staticmethod
     def _slug(video_path: str) -> str:
@@ -227,7 +248,7 @@ class RegistroVideo:
 
     @property
     def existe(self) -> bool:
-        return self.manual.existe or self.auto.existe
+        return self.manual.existe or self.auto.existe or self.fuertes.existe
 
     # ── Lectura ───────────────────────────────────────────────────────────────
 
@@ -238,13 +259,17 @@ class RegistroVideo:
     def cargar_automaticas(self) -> List[Marca]:
         del_auto = self.auto.cargar()
         # Idem: rescatar las automáticas que quedaron en el archivo viejo.
-        del_manual = [m for m in self.manual.cargar() if not m.es_manual]
+        del_manual = [m for m in self.manual.cargar() if m.tipo == AUTOMATICO]
         todas = del_auto + del_manual
         todas.sort(key=lambda m: m.inicio_s)
         return todas
 
+    def cargar_fuertes(self) -> List[Marca]:
+        return self.fuertes.cargar()
+
     def cargar(self) -> List[Marca]:
-        todas = self.cargar_manuales() + self.cargar_automaticas()
+        todas = (self.cargar_manuales() + self.cargar_automaticas() +
+                 self.cargar_fuertes())
         todas.sort(key=lambda m: m.inicio_s)
         return todas
 
@@ -252,7 +277,6 @@ class RegistroVideo:
 
     def agregar(self, marcas: List[Marca]) -> int:
         """Manda cada marca al archivo que le corresponde según su tipo."""
-        manuales = [m for m in marcas if m.es_manual]
-        automaticas = [m for m in marcas if not m.es_manual]
-        return (self.manual.agregar(manuales) +
-                self.auto.agregar(automaticas))
+        return (self.manual.agregar([m for m in marcas if m.tipo == MANUAL]) +
+                self.auto.agregar([m for m in marcas if m.tipo == AUTOMATICO]) +
+                self.fuertes.agregar([m for m in marcas if m.tipo == FUERTE]))

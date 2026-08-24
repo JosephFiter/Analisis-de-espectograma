@@ -3,9 +3,9 @@ Marcas dibujadas sobre el espectrograma, compartidas por el preview de la
 ventana principal y por la ventana de reproducción, para que una detección
 automática y una marca manual se vean exactamente igual salvo por el color.
 
-Las dos clases de marca van en filas distintas para que nunca se tapen entre
-sí: las automáticas pegadas al espectrograma, las manuales una fila más
-arriba.
+Cada clase de marca va en su propia fila para que nunca se tapen entre sí:
+las detecciones USV pegadas al espectrograma, los sonidos fuertes una fila
+más arriba, y las marcas manuales arriba de todo.
 """
 import math
 
@@ -13,7 +13,8 @@ from PyQt5.QtGui import QColor, QPainter, QPen, QPolygon
 from PyQt5.QtCore import QPoint
 
 
-COLOR_AUTO   = QColor(220, 50, 50)    # rojo – detección automática
+COLOR_AUTO   = QColor(220, 50, 50)    # rojo  – detección USV (coincidencia de bandas)
+COLOR_FUERTE = QColor(245, 200, 60)   # ámbar – detección de sonidos fuertes
 COLOR_MANUAL = QColor(60, 140, 255)   # azul – marca del usuario (sin tipo asignado)
 
 # Marca con un tipo asignado, pero que no coincide con ninguno de los tipos
@@ -62,11 +63,13 @@ def color_for_boton_index(index: int) -> QColor:
 MARKER_H = 10   # alto de la flecha, en píxeles
 ROW_GAP  = 3    # separación entre filas
 
+# Cada clase de marca va en su propia fila para que nunca se tapen entre sí.
 FILA_AUTO   = 0   # la de abajo, apoyada sobre el borde del espectrograma
-FILA_MANUAL = 1   # la de arriba
+FILA_FUERTE = 1   # la del medio
+FILA_MANUAL = 2   # la de arriba
 
-# Margen superior que un widget debe reservar para que entren las dos filas.
-MARGEN_SUPERIOR = 2 * (MARKER_H + ROW_GAP) + 2
+# Margen superior que un widget debe reservar para que entren las tres filas.
+MARGEN_SUPERIOR = 3 * (MARKER_H + ROW_GAP) + 2
 
 
 def base_fila(cr_top: int, fila: int) -> int:

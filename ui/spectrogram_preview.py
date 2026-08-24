@@ -5,7 +5,7 @@ from PyQt5.QtGui import (QPainter, QPixmap, QImage, QColor, QPen,
 from PyQt5.QtCore import Qt, QRect
 
 from ui import markers
-from ui.markers import COLOR_AUTO, COLOR_MANUAL, draw_marker
+from ui.markers import COLOR_AUTO, COLOR_FUERTE, COLOR_MANUAL, draw_marker
 
 
 class SpectrogramPreview(QWidget):
@@ -26,6 +26,7 @@ class SpectrogramPreview(QWidget):
         self._times  = None    # 1-D float array, seconds
         self._freqs  = None    # 1-D float array, Hz (after freq filtering)
         self._usv_events = []  # List[USVEvent] en tiempo absoluto del audio
+        self._strong_events = []  # List[StrongEvent] en tiempo absoluto del audio
         self._manual_marks = []  # tiempos (s) absolutos del audio
         self._t0 = 0.0         # instante del audio en el borde izquierdo
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -67,6 +68,11 @@ class SpectrogramPreview(QWidget):
     def set_usv_events(self, events: list):
         """USVEvent en tiempo absoluto del audio: rectángulos + flecha roja."""
         self._usv_events = events if events else []
+        self.update()
+
+    def set_strong_events(self, events: list):
+        """StrongEvent en tiempo absoluto del audio: rectángulos + flecha ámbar."""
+        self._strong_events = events if events else []
         self.update()
 
     def clear_usv_events(self):
@@ -205,29 +211,35 @@ class SpectrogramPreview(QWidget):
             """Tiempo absoluto del audio → X en píxeles."""
             return cr.left() + int(((t_abs - self._t0) / t_end) * cr.width())
 
-        # ── Eventos automáticos: rectángulo + flecha roja (fila de abajo) ─────
-        y_auto = markers.base_fila(cr.top(), markers.FILA_AUTO)
-        for ev in self._usv_events:
-            if ev.end_s < self._t0 or ev.start_s > self._t0 + t_end:
-                continue
-
-            x0 = _x(ev.start_s)
-            x1 = max(_x(ev.end_s), x0 + 2)   # mínimo 2 px de ancho
-
-            # Mapear frecuencia → Y en píxeles (0 = top = fmax)
-            frange = fmax - fmin
+        # ── Detecciones automáticas: rectángulo + flecha ──────────────────────
+        # Los dos detectores se dibujan igual; los distingue el color y la
+        # fila, así se pueden mirar los dos resultados a la vez sin taparse.
+        frange = fmax - fmin
+        for eventos, color, fila in (
+            (self._usv_events,    COLOR_AUTO,   markers.FILA_AUTO),
+            (self._strong_events, COLOR_FUERTE, markers.FILA_FUERTE),
+        ):
             if frange <= 0:
-                continue
-            y_top    = cr.bottom() - int(((min(ev.fmax_hz, fmax) - fmin) / frange) * cr.height())
-            y_bottom = cr.bottom() - int(((max(ev.fmin_hz, fmin) - fmin) / frange) * cr.height())
-            y_top    = max(y_top,    cr.top())
-            y_bottom = min(y_bottom, cr.bottom())
+                break
+            y_fila = markers.base_fila(cr.top(), fila)
+            for ev in eventos:
+                if ev.end_s < self._t0 or ev.start_s > self._t0 + t_end:
+                    continue
 
-            p.setPen(QPen(COLOR_AUTO, 2))
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(x0, y_top, x1 - x0, y_bottom - y_top)
-            # La flecha va sobre el arranque del evento, no sobre el medio.
-            draw_marker(p, x0, y_auto, COLOR_AUTO)
+                x0 = _x(ev.start_s)
+                x1 = max(_x(ev.end_s), x0 + 2)   # mínimo 2 px de ancho
+
+                # Mapear frecuencia → Y en píxeles (0 = top = fmax)
+                y_top    = cr.bottom() - int(((min(ev.fmax_hz, fmax) - fmin) / frange) * cr.height())
+                y_bottom = cr.bottom() - int(((max(ev.fmin_hz, fmin) - fmin) / frange) * cr.height())
+                y_top    = max(y_top,    cr.top())
+                y_bottom = min(y_bottom, cr.bottom())
+
+                p.setPen(QPen(color, 2))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(x0, y_top, x1 - x0, y_bottom - y_top)
+                # La flecha va sobre el arranque del evento, no sobre el medio.
+                draw_marker(p, x0, y_fila, color)
 
         # ── Marcas manuales: línea + flecha con el color de su tipo ───────────
         y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)

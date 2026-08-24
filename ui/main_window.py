@@ -19,7 +19,7 @@ from core.audio_engine import AudioEngine
 from core.video_engine import VideoEngine
 from core.spectrogram_engine import SpectrogramSettings
 from core.usv_detector import USVEvent
-from core.registro import RegistroVideo, Marca, MANUAL, AUTOMATICO
+from core.registro import RegistroVideo, Marca, MANUAL, AUTOMATICO, FUERTE
 from core import tipos_captura as tipos_captura_store
 
 from workers.audio_load_worker import AudioLoadWorker
@@ -79,6 +79,69 @@ class _LS(QWidget):
         self._sl.setValue(v)
 
 
+# ── Contenedor plegable ───────────────────────────────────────────────────────
+
+class _CollapsibleBox(QWidget):
+    """
+    Caja con un encabezado que se clickea para mostrar u ocultar su contenido.
+
+    Se usa para los ajustes del espectrograma, que arrancan plegados: la
+    mayoría de las veces alcanza con los valores por defecto, y así el panel
+    queda corto y los botones de acción quedan a la vista sin scrollear.
+    """
+
+    def __init__(self, title: str, expanded: bool = False, parent=None):
+        super().__init__(parent)
+        self._title = title
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self._header = QPushButton()
+        self._header.setCheckable(True)
+        self._header.setChecked(expanded)
+        self._header.setFixedHeight(30)
+        self._header.setCursor(Qt.PointingHandCursor)
+        self._header.setFocusPolicy(Qt.NoFocus)
+        self._header.setToolTip(
+            "Mostrar u ocultar los ajustes del espectrograma.\n"
+            "Con los valores por defecto ya funciona: sólo hace falta abrirlos\n"
+            "para afinar el contraste, las bandas de frecuencia o la FFT."
+        )
+        self._header.setStyleSheet(
+            "QPushButton {"
+            "  text-align: left; padding: 4px 8px; font-weight: bold;"
+            "  border: 1px solid #5a5a5a; border-radius: 3px;"
+            "}"
+            "QPushButton:hover { border-color: #8a8a8a; }"
+        )
+        root.addWidget(self._header)
+
+        self._content = QWidget()
+        self._content_lay = QVBoxLayout(self._content)
+        self._content_lay.setContentsMargins(8, 6, 8, 4)
+        self._content_lay.setSpacing(5)
+        root.addWidget(self._content)
+
+        self._header.toggled.connect(self._apply)
+        self._apply(expanded)
+
+    def content_layout(self) -> QVBoxLayout:
+        """Layout donde se agrega el contenido que se pliega."""
+        return self._content_lay
+
+    def set_expanded(self, expanded: bool):
+        self._header.setChecked(expanded)
+
+    def is_expanded(self) -> bool:
+        return self._header.isChecked()
+
+    def _apply(self, expanded: bool):
+        self._content.setVisible(expanded)
+        self._header.setText(("▾  " if expanded else "▸  ") + self._title)
+
+
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -102,6 +165,7 @@ class MainWindow(QMainWindow):
         self._spec_win     = None   # ventana independiente del espectrograma 1
         self._spec_win2    = None   # ventana independiente del espectrograma 2
         self._usv_events   = []     # eventos USV, en tiempo absoluto del audio
+        self._strong_events = []    # sonidos fuertes, en tiempo absoluto del audio
         self._manual_marks = []     # marcas manuales, en tiempo absoluto del audio
         self._spec_t0      = 0.0    # instante del audio en el borde izq. del espectrograma
         self._registro     = None   # RegistroVideo del video cargado
@@ -158,9 +222,11 @@ class MainWindow(QMainWindow):
         lv.addWidget(g1)
 
         # Step 2 ─ spectrogram settings
-        g2 = QGroupBox("Paso 2 — Configurar espectrograma")
-        gl2 = QVBoxLayout(g2)
-        gl2.setSpacing(5)
+        # Los ajustes van en una caja plegada por defecto: casi nadie los
+        # toca, y así los botones de acción quedan arriba y a la vista.
+        g2 = _CollapsibleBox("Paso 2 — Configurar espectrograma", expanded=False)
+        self._settings_box = g2
+        gl2 = g2.content_layout()
 
         cm_row = QHBoxLayout()
         cm_row.addWidget(QLabel("Colormap:"))
@@ -277,17 +343,34 @@ class MainWindow(QMainWindow):
         dur_row.addWidget(self._dur_spin)
         gl2.addLayout(dur_row)
 
+        lv.addWidget(g2)
+
+        # Acciones del Paso 2 ─ fuera de la caja plegable, para que sigan
+        # a mano con los ajustes cerrados.
+        acciones = QVBoxLayout()
+        acciones.setSpacing(4)
+        acciones.setContentsMargins(0, 2, 0, 0)
+
         self._prev_btn = QPushButton("Ver espectrograma")
-        self._prev_btn.setFixedHeight(30)
+        self._prev_btn.setFixedHeight(32)
         self._prev_btn.setEnabled(False)
+        self._prev_btn.setStyleSheet("font-weight:bold;")
+        self._prev_btn.setToolTip(
+            "Calcula y muestra el espectrograma con los ajustes actuales."
+        )
         self._prev_btn.clicked.connect(self._run_spectrogram)
-        gl2.addWidget(self._prev_btn)
+        acciones.addWidget(self._prev_btn)
 
         self._usv_btn = QPushButton("Detectar USVs")
         self._usv_btn.setFixedHeight(30)
         self._usv_btn.setEnabled(False)
+        self._usv_btn.setToolTip(
+            "Busca vocalizaciones exigiendo señal simultánea en dos bandas\n"
+            "(≈48-65 kHz y ≈80-110 kHz).\n"
+            "Se marcan con flechas rojas y van a registros/<video>auto.csv"
+        )
         self._usv_btn.clicked.connect(self._run_usv_detection)
-        gl2.addWidget(self._usv_btn)
+        acciones.addWidget(self._usv_btn)
 
         self._strong_btn = QPushButton("Detección fuertes")
         self._strong_btn.setFixedHeight(30)
@@ -295,11 +378,13 @@ class MainWindow(QMainWindow):
         self._strong_btn.setToolTip(
             "Busca los sonidos fuertes: trazos tonales bien marcados sobre el\n"
             "fondo, como las vocalizaciones que se ven a simple vista.\n"
-            "Descarta golpes y ruido de banda ancha."
+            "Descarta golpes y ruido de banda ancha.\n"
+            "Se marcan con flechas ámbar y van a registros/<video>fuertes.csv"
         )
         self._strong_btn.clicked.connect(self._run_strong_detection)
-        gl2.addWidget(self._strong_btn)
-        lv.addWidget(g2)
+        acciones.addWidget(self._strong_btn)
+
+        lv.addLayout(acciones)
 
         # Step 3 ─ abrir ventanas
         g3 = QGroupBox("Paso 3 — Ver en ventanas")
@@ -520,30 +605,31 @@ class MainWindow(QMainWindow):
 
         # Buscar el registro de este video y restaurar las marcas previas.
         self._registro = RegistroVideo(engine.path, self._registro_folder())
-        self._usv_events   = []
-        self._manual_marks = []
+        self._usv_events    = []
+        self._strong_events = []
+        self._manual_marks  = []
 
         if self._registro.existe:
             self._manual_marks = [(m.inicio_s, m.tipo_captura)
                                   for m in self._registro.cargar_manuales()]
-            self._usv_events = [
-                USVEvent(
-                    start_s=m.inicio_s,
-                    end_s=m.fin_s,
-                    fmin_hz=m.freq_min_hz or 0.0,
-                    fmax_hz=m.freq_max_hz or 0.0,
-                    peak_energy=m.peak_energy or 0.0,
-                )
-                for m in self._registro.cargar_automaticas()
-            ]
-            n_man, n_aut = len(self._manual_marks), len(self._usv_events)
-            info += f"\n✓ ya analizado — {n_man} manual(es), {n_aut} automática(s)"
+            self._usv_events    = self._marcas_a_eventos(
+                self._registro.cargar_automaticas())
+            self._strong_events = self._marcas_a_eventos(
+                self._registro.cargar_fuertes())
+
+            n_man = len(self._manual_marks)
+            n_aut = len(self._usv_events)
+            n_fue = len(self._strong_events)
+            info += (f"\n✓ ya analizado — {n_man} manual(es), "
+                     f"{n_aut} USV, {n_fue} fuerte(s)")
 
             leidos = []
             if n_man:
                 leidos.append(f"{n_man} de {self._registro.manual.nombre}")
             if n_aut:
                 leidos.append(f"{n_aut} de {self._registro.auto.nombre}")
+            if n_fue:
+                leidos.append(f"{n_fue} de {self._registro.fuertes.nombre}")
             if leidos:
                 self._status.showMessage(
                     "Video ya analizado: " + ", ".join(leidos))
@@ -557,6 +643,20 @@ class MainWindow(QMainWindow):
         self._refresh_marks()
         self._refresh_buttons()
 
+    @staticmethod
+    def _marcas_a_eventos(marcas: list) -> list:
+        """Marca del CSV → USVEvent, que es lo que dibujan los widgets."""
+        return [
+            USVEvent(
+                start_s=m.inicio_s,
+                end_s=m.fin_s,
+                fmin_hz=m.freq_min_hz or 0.0,
+                fmax_hz=m.freq_max_hz or 0.0,
+                peak_energy=m.peak_energy or 0.0,
+            )
+            for m in marcas
+        ]
+
     def _registro_folder(self) -> str:
         base = os.path.normpath(
             os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
@@ -569,10 +669,12 @@ class MainWindow(QMainWindow):
                         for t, tipo in self._manual_marks]
         self._preview.set_time_origin(self._spec_t0)
         self._preview.set_usv_events(self._usv_events)
+        self._preview.set_strong_events(self._strong_events)
         self._preview.set_manual_marks(marcas_color)
         for win in (self._spec_win, self._spec_win2):
             if win is not None:
                 win.set_usv_events(self._usv_events)
+                win.set_strong_events(self._strong_events)
                 win.set_manual_marks(marcas_color)
 
     def _on_audio_loaded(self, engine: AudioEngine):
@@ -799,7 +901,7 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
         )
         if resp == QMessageBox.Yes:
-            self._save_usv_registro(self._usv_events)
+            self._save_deteccion(self._usv_events, AUTOMATICO, destino)
 
     # ── Detección de sonidos fuertes ──────────────────────────────
 
@@ -811,7 +913,9 @@ class MainWindow(QMainWindow):
         self._strong_btn.setEnabled(False)
         self._strong_btn.setText("Detectando…")
         self._status.showMessage("Detectando sonidos fuertes…")
-        self._usv_events = []
+        # Sólo se limpian los resultados de este detector: los del otro
+        # quedan en pantalla y en su propio archivo.
+        self._strong_events = []
         self._refresh_marks()
 
         worker = StrongWorker(self._audio_engine.samples,
@@ -832,25 +936,17 @@ class MainWindow(QMainWindow):
         self._strong_btn.setText("Detección fuertes")
 
     def _on_strong_done(self, events: list):
-        # Se dibujan con las mismas flechas que los USV.
-        self._usv_events = [
-            USVEvent(
-                start_s=ev.start_s,
-                end_s=ev.end_s,
-                fmin_hz=ev.fmin_hz,
-                fmax_hz=ev.fmax_hz,
-                peak_energy=ev.peak_energy,
-            )
-            for ev in events
-        ]
-        n = len(self._usv_events)
+        # Se guardan aparte de los USV: son detectores distintos y cada uno
+        # tiene su propia fila de flechas y su propio CSV.
+        self._strong_events = list(events)
+        n = len(self._strong_events)
         self._status.showMessage(
             f"Detección de sonidos fuertes: {n} evento{'s' if n != 1 else ''} "
             f"encontrado{'s' if n != 1 else ''}."
         )
         self._refresh_marks()
 
-        if not self._usv_events:
+        if not self._strong_events:
             QMessageBox.information(
                 self, "Sin resultados",
                 "No se encontró ningún sonido fuerte en este audio."
@@ -869,14 +965,19 @@ class MainWindow(QMainWindow):
         resp = QMessageBox.question(
             self, "Guardar detección",
             f"Se detectaron {n} sonido{'s' if n != 1 else ''} fuerte{'s' if n != 1 else ''}.\n"
-            f"¿Guardar en registros/{self._registro.auto.nombre}?",
+            f"¿Guardar en registros/{self._registro.fuertes.nombre}?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
         )
         if resp == QMessageBox.Yes:
-            self._save_usv_registro(self._usv_events)
+            self._save_deteccion(self._strong_events, FUERTE,
+                                 self._registro.fuertes.nombre)
 
-    def _save_usv_registro(self, events: list):
-        """Agrega los eventos USV detectados al registro CSV de este video."""
+    def _save_deteccion(self, events: list, tipo: str, nombre_archivo: str):
+        """
+        Agrega los eventos detectados al CSV que le toca a ese detector.
+        `tipo` decide el archivo: AUTOMATICO → <video>auto.csv,
+        FUERTE → <video>fuertes.csv.
+        """
         if self._registro is None:
             return
         audio_name = (os.path.basename(self._audio_engine.path)
@@ -885,7 +986,7 @@ class MainWindow(QMainWindow):
 
         marcas = [
             Marca(
-                tipo=AUTOMATICO,
+                tipo=tipo,
                 inicio_s=ev.start_s,
                 fin_s=ev.end_s,
                 freq_min_hz=ev.fmin_hz,
@@ -901,7 +1002,7 @@ class MainWindow(QMainWindow):
         try:
             n_nuevas = self._registro.agregar(marcas)
             repetidas = len(marcas) - n_nuevas
-            msg = (f"Registro guardado: registros/{self._registro.auto.nombre} "
+            msg = (f"Registro guardado: registros/{nombre_archivo} "
                    f"({n_nuevas} nueva{'s' if n_nuevas != 1 else ''}")
             msg += f", {repetidas} ya estaban)" if repetidas else ")"
             self._status.showMessage(msg)
