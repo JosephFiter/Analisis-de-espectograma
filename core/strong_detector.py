@@ -28,6 +28,16 @@ cada frame se miran tres cosas:
 Los frames que pasan los tres filtros se agrupan exigiendo que el pico
 no salte de frecuencia entre frames vecinos: eso mantiene juntos los
 trazos continuos y evita pegar dos ruidos sueltos.
+
+Las que no son flats
+--------------------
+Una llamada doble —fundamental abajo, armónico arriba— tiene la parte
+de abajo bien plana, así que entraba acá como si fuera un flat suelto.
+Para separarlas, antes de aceptar un evento se mira si arriba suyo hay
+otro trazo sonando al mismo tiempo; si lo hay, el evento es la mitad de
+abajo de una doble y se descarta. El trazo de arriba se pide coherente
+(que no salte de frecuencia) para no confundirlo con el moteado del
+fondo, que aparece y desaparece en cualquier lado.
 """
 
 from dataclasses import dataclass
@@ -84,6 +94,25 @@ class StrongDetector:
         como plano: el mayor entre esos kHz fijos y esa fracción de la
         frecuencia de la llamada (así la tolerancia acompaña a llamadas
         más agudas).
+    veto_doble
+        Si está activo se descartan los eventos que tienen otra
+        vocalización sonando arriba: son la parte de abajo de una doble,
+        no un flat.
+    veto_gap_khz
+        A partir de cuántos kHz por encima del evento se empieza a
+        mirar. Sirve para no tomar por vocalización de arriba el propio
+        ancho del trazo.
+    veto_snr_db
+        SNR que tiene que alcanzar el trazo de arriba para contar. Va
+        más bajo que snr_db porque el armónico suele venir bastante más
+        débil que la fundamental.
+    veto_frac
+        Qué fracción de los frames del evento necesita tener ese trazo
+        arriba. Un armónico acompaña casi toda la llamada; un pico
+        aislado de ruido, no.
+    veto_span_khz
+        Cuánto puede moverse en frecuencia el trazo de arriba para
+        seguir contando como un trazo y no como moteado disperso.
     """
 
     def __init__(
@@ -102,6 +131,11 @@ class StrongDetector:
         flat_only: bool = True,
         flat_span_khz: float = 2.5,
         flat_span_frac: float = 0.06,
+        veto_doble: bool = True,
+        veto_gap_khz: float = 10.0,
+        veto_snr_db: float = 12.0,
+        veto_frac: float = 0.30,
+        veto_span_khz: float = 15.0,
         block_s: float = 10.0,
     ):
         self.n_fft           = n_fft
@@ -118,6 +152,11 @@ class StrongDetector:
         self.flat_only       = flat_only
         self.flat_span_khz   = flat_span_khz
         self.flat_span_frac  = flat_span_frac
+        self.veto_doble      = veto_doble
+        self.veto_gap_khz    = veto_gap_khz
+        self.veto_snr_db     = veto_snr_db
+        self.veto_frac       = veto_frac
+        self.veto_span_khz   = veto_span_khz
         self.block_s         = block_s
 
     # ── Detección ─────────────────────────────────────────────────────────────
@@ -163,19 +202,22 @@ class StrongDetector:
         power = (np.abs(D) ** 2).astype(np.float32) + 1e-20
         freqs = librosa.fft_frequencies(sr=sr, n_fft=self.n_fft)
 
-        band = (freqs >= self.fmin) & (freqs <= min(self.fmax, sr / 2.0))
-        if band.sum() < 8:
-            return []
-        power = power[band]
-        fband = freqs[band]
-
         dt    = self.hop_length / float(sr)
         times = t0 + np.arange(power.shape[1]) * dt
 
         # Normalización por banda: el ruido constante queda en 1 (0 dB).
-        bg    = np.maximum(np.median(power, axis=1, keepdims=True), 1e-30)
-        ratio = power / bg
-        r_db  = 10.0 * np.log10(np.maximum(ratio, 1e-12))
+        # Se hace sobre el espectro entero y recién después se recorta a la
+        # banda de búsqueda, porque el veto de dobles necesita mirar arriba
+        # de fmax.
+        bg        = np.maximum(np.median(power, axis=1, keepdims=True), 1e-30)
+        r_db_full = 10.0 * np.log10(np.maximum(power / bg, 1e-12))
+
+        band = (freqs >= self.fmin) & (freqs <= min(self.fmax, sr / 2.0))
+        if band.sum() < 8:
+            return []
+        fband = freqs[band]
+        r_db  = r_db_full[band]
+        ratio = (power / bg)[band]
 
         peak_i = ratio.argmax(axis=0)
         snr    = r_db[peak_i, np.arange(ratio.shape[1])]
@@ -197,10 +239,11 @@ class StrongDetector:
                 (conc >= self.conc_min) &
                 (broad <= self.broadband_max))
 
-        return self._group(good, snr, peak_f, times, dt)
+        return self._group(good, snr, peak_f, times, dt, r_db_full, freqs)
 
     def _group(self, good: np.ndarray, snr: np.ndarray, peak_f: np.ndarray,
-               times: np.ndarray, dt: float) -> List[StrongEvent]:
+               times: np.ndarray, dt: float,
+               r_db_full: np.ndarray, freqs: np.ndarray) -> List[StrongEvent]:
         """Une frames buenos consecutivos en eventos con trazo continuo."""
         max_gap    = max(1, int(self.max_gap_ms / 1000.0 / dt))
         min_frames = max(1, int(self.min_duration_ms / 1000.0 / dt))
@@ -226,6 +269,10 @@ class StrongDetector:
                 mask = good[sel]
                 fsel = peak_f[sel][mask]
                 if self.flat_only and not self._es_plana(fsel):
+                    i = last + 1
+                    continue
+                if self.veto_doble and self._hay_trazo_arriba(
+                        r_db_full, freqs, i, last, float(fsel.max())):
                     i = last + 1
                     continue
                 events.append(StrongEvent(
@@ -256,6 +303,35 @@ class StrongDetector:
         limite = max(self.flat_span_khz * 1000.0,
                      self.flat_span_frac * float(np.median(contorno)))
         return recorrido <= limite
+
+    def _hay_trazo_arriba(self, r_db_full: np.ndarray, freqs: np.ndarray,
+                          i0: int, i1: int, f_top: float) -> bool:
+        """
+        ¿Hay otra vocalización sonando arriba del evento?
+
+        Se mira la franja que arranca veto_gap_khz por encima del trazo y
+        se piden dos cosas a la vez: que el pico de esa franja pase de
+        veto_snr_db en al menos veto_frac de los frames del evento, y que
+        en esos frames se quede más o menos en la misma frecuencia. Lo
+        segundo es lo que distingue un armónico —que acompaña la llamada
+        de punta a punta— del moteado del fondo, que salta de frecuencia
+        de un frame al otro.
+        """
+        arriba = freqs >= f_top + self.veto_gap_khz * 1000.0
+        if arriba.sum() < 3:
+            return False
+
+        tramo = r_db_full[np.ix_(arriba, np.arange(i0, i1 + 1))]
+        f_arr = freqs[arriba]
+
+        pico = tramo.max(axis=0)
+        hot  = pico >= self.veto_snr_db
+        if hot.mean() < self.veto_frac or hot.sum() < 3:
+            return False
+
+        f_pico   = f_arr[tramo.argmax(axis=0)][hot]
+        p10, p90 = np.percentile(f_pico, [10, 90])
+        return float(p90 - p10) <= self.veto_span_khz * 1000.0
 
     @staticmethod
     def _dedupe(events: List[StrongEvent], tol_s: float = 0.01) -> List[StrongEvent]:
