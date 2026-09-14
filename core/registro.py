@@ -4,6 +4,7 @@ Registro persistente de marcas: tres archivos CSV por cada video analizado.
     registros/<video>.csv          marcas manuales (las que hace el usuario)
     registros/<video>auto.csv      detecciones del USVDetector
     registros/<video>fuertes.csv   detecciones del StrongDetector
+    registros/<video>tipos.csv     detecciones del DetectorTipos
 
 Los dos detectores automáticos van a archivos distintos a propósito: buscan
 cosas diferentes (coincidencia entre dos bandas fijas uno, trazos tonales
@@ -32,8 +33,9 @@ from typing import List, Optional
 MANUAL     = 'manual'
 AUTOMATICO = 'automatico'
 FUERTE     = 'fuerte'
+TIPIFICADA = 'tipificada'
 
-TIPOS = (MANUAL, AUTOMATICO, FUERTE)
+TIPOS = (MANUAL, AUTOMATICO, FUERTE, TIPIFICADA)
 
 # Cada archivo guarda sólo las columnas que le sirven.
 _HEADER_MANUAL = [
@@ -48,6 +50,16 @@ _HEADER_AUTO = [
 # Los sonidos fuertes guardan lo mismo que las detecciones USV: el archivo
 # aparte ya dice de qué detector vienen.
 _HEADER_FUERTE = list(_HEADER_AUTO)
+
+# El detector de tipos agrega dos columnas propias: el tipo que le asignó a
+# cada vocalización y en qué se basó para asignárselo. El motivo se guarda
+# porque es lo que permite discutir una clasificación sin volver a correr
+# nada: dice qué números decidieron y contra qué corte se los comparó.
+_HEADER_TIPOS = [
+    'inicio_s', 'fin_s', 'duracion_ms', 'tipo_vocalizacion',
+    'freq_min_hz', 'freq_max_hz', 'peak_energy', 'motivo',
+    'video', 'audio', 'fecha_hora',
+]
 
 # Dos marcas del mismo tipo separadas por menos de esto son la misma.
 _TOL_S = 0.001
@@ -79,6 +91,8 @@ class Marca:
     captura: str = ''
     tipo_captura: str = ''
     fecha_hora: str = ''
+    tipo_vocalizacion: str = ''   # 'Flat', 'FM' o 'harmonic'
+    motivo: str = ''              # por qué el detector le puso ese tipo
 
     @property
     def es_manual(self) -> bool:
@@ -107,6 +121,7 @@ class Marca:
             'offset_audio_s': self.offset_audio_s,
             'video': self.video, 'audio': self.audio, 'captura': self.captura,
             'tipo_captura': self.tipo_captura,
+            'tipo_vocalizacion': self.tipo_vocalizacion, 'motivo': self.motivo,
             'fecha_hora': (self.fecha_hora or
                            datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
         }
@@ -145,6 +160,8 @@ class Marca:
             captura=(d.get('captura') or ''),
             tipo_captura=(d.get('tipo_captura') or ''),
             fecha_hora=(d.get('fecha_hora') or ''),
+            tipo_vocalizacion=(d.get('tipo_vocalizacion') or ''),
+            motivo=(d.get('motivo') or ''),
         )
 
 
@@ -239,6 +256,8 @@ class RegistroVideo:
             os.path.join(carpeta, stem + 'auto.csv'), AUTOMATICO, _HEADER_AUTO)
         self.fuertes = _ArchivoMarcas(
             os.path.join(carpeta, stem + 'fuertes.csv'), FUERTE, _HEADER_FUERTE)
+        self.tipos = _ArchivoMarcas(
+            os.path.join(carpeta, stem + 'tipos.csv'), TIPIFICADA, _HEADER_TIPOS)
 
     @staticmethod
     def _slug(video_path: str) -> str:
@@ -248,7 +267,8 @@ class RegistroVideo:
 
     @property
     def existe(self) -> bool:
-        return self.manual.existe or self.auto.existe or self.fuertes.existe
+        return (self.manual.existe or self.auto.existe or
+                self.fuertes.existe or self.tipos.existe)
 
     # ── Lectura ───────────────────────────────────────────────────────────────
 
@@ -267,9 +287,12 @@ class RegistroVideo:
     def cargar_fuertes(self) -> List[Marca]:
         return self.fuertes.cargar()
 
+    def cargar_tipificadas(self) -> List[Marca]:
+        return self.tipos.cargar()
+
     def cargar(self) -> List[Marca]:
         todas = (self.cargar_manuales() + self.cargar_automaticas() +
-                 self.cargar_fuertes())
+                 self.cargar_fuertes() + self.cargar_tipificadas())
         todas.sort(key=lambda m: m.inicio_s)
         return todas
 
@@ -279,4 +302,5 @@ class RegistroVideo:
         """Manda cada marca al archivo que le corresponde según su tipo."""
         return (self.manual.agregar([m for m in marcas if m.tipo == MANUAL]) +
                 self.auto.agregar([m for m in marcas if m.tipo == AUTOMATICO]) +
-                self.fuertes.agregar([m for m in marcas if m.tipo == FUERTE]))
+                self.fuertes.agregar([m for m in marcas if m.tipo == FUERTE]) +
+                self.tipos.agregar([m for m in marcas if m.tipo == TIPIFICADA]))

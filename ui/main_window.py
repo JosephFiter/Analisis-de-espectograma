@@ -1,4 +1,5 @@
 import os
+from collections import Counter
 import csv
 from datetime import datetime
 import numpy as np
@@ -19,7 +20,8 @@ from core.audio_engine import AudioEngine
 from core.video_engine import VideoEngine
 from core.spectrogram_engine import SpectrogramSettings
 from core.usv_detector import USVEvent
-from core.registro import RegistroVideo, Marca, MANUAL, AUTOMATICO, FUERTE
+from core.registro import (RegistroVideo, Marca, MANUAL, AUTOMATICO,
+                           FUERTE, TIPIFICADA)
 from core import tipos_captura as tipos_captura_store
 
 from workers.audio_load_worker import AudioLoadWorker
@@ -27,6 +29,8 @@ from workers.video_load_worker import VideoLoadWorker
 from workers.spectrogram_worker import SpectrogramWorker
 from workers.usv_worker import USVWorker
 from workers.strong_worker import StrongWorker
+from workers.tipos_worker import TiposWorker
+from core.tipo_detector import Vocalizacion
 from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow, capture_windows
 from ui import markers
 
@@ -166,6 +170,7 @@ class MainWindow(QMainWindow):
         self._spec_win2    = None   # ventana independiente del espectrograma 2
         self._usv_events   = []     # eventos USV, en tiempo absoluto del audio
         self._strong_events = []    # sonidos fuertes, en tiempo absoluto del audio
+        self._tipo_events  = []     # vocalizaciones clasificadas, tiempo absoluto
         self._manual_marks = []     # marcas manuales, en tiempo absoluto del audio
         self._spec_t0      = 0.0    # instante del audio en el borde izq. del espectrograma
         self._registro     = None   # RegistroVideo del video cargado
@@ -383,6 +388,17 @@ class MainWindow(QMainWindow):
         )
         self._strong_btn.clicked.connect(self._run_strong_detection)
         acciones.addWidget(self._strong_btn)
+
+        self._tipos_btn = QPushButton("Detectar vocalizaciones")
+        self._tipos_btn.setFixedHeight(30)
+        self._tipos_btn.setEnabled(False)
+        self._tipos_btn.setToolTip(
+            "Busca las vocalizaciones en todo el audio y clasifica cada una\n"
+            "en Flat, FM o harmonic (las que tienen doble).\n"
+            "Cada tipo se dibuja de un color; van a registros/<video>tipos.csv"
+        )
+        self._tipos_btn.clicked.connect(self._run_tipo_detection)
+        acciones.addWidget(self._tipos_btn)
 
         lv.addLayout(acciones)
 
@@ -607,6 +623,7 @@ class MainWindow(QMainWindow):
         self._registro = RegistroVideo(engine.path, self._registro_folder())
         self._usv_events    = []
         self._strong_events = []
+        self._tipo_events   = []
         self._manual_marks  = []
 
         if self._registro.existe:
@@ -616,10 +633,13 @@ class MainWindow(QMainWindow):
                 self._registro.cargar_automaticas())
             self._strong_events = self._marcas_a_eventos(
                 self._registro.cargar_fuertes())
+            self._tipo_events = self._marcas_a_vocalizaciones(
+                self._registro.cargar_tipificadas())
 
             n_man = len(self._manual_marks)
             n_aut = len(self._usv_events)
             n_fue = len(self._strong_events)
+            n_tip = len(self._tipo_events)
             info += (f"\n✓ ya analizado — {n_man} manual(es), "
                      f"{n_aut} USV, {n_fue} fuerte(s)")
 
@@ -630,6 +650,8 @@ class MainWindow(QMainWindow):
                 leidos.append(f"{n_aut} de {self._registro.auto.nombre}")
             if n_fue:
                 leidos.append(f"{n_fue} de {self._registro.fuertes.nombre}")
+            if n_tip:
+                leidos.append(f"{n_tip} de {self._registro.tipos.nombre}")
             if leidos:
                 self._status.showMessage(
                     "Video ya analizado: " + ", ".join(leidos))
@@ -670,11 +692,13 @@ class MainWindow(QMainWindow):
         self._preview.set_time_origin(self._spec_t0)
         self._preview.set_usv_events(self._usv_events)
         self._preview.set_strong_events(self._strong_events)
+        self._preview.set_tipo_events(self._tipo_events)
         self._preview.set_manual_marks(marcas_color)
         for win in (self._spec_win, self._spec_win2):
             if win is not None:
                 win.set_usv_events(self._usv_events)
                 win.set_strong_events(self._strong_events)
+                win.set_tipo_events(self._tipo_events)
                 win.set_manual_marks(marcas_color)
 
     def _on_audio_loaded(self, engine: AudioEngine):
@@ -744,6 +768,7 @@ class MainWindow(QMainWindow):
         self._prev_btn.setEnabled(has_audio and not self._computing)
         self._usv_btn.setEnabled(has_audio and not self._computing)
         self._strong_btn.setEnabled(has_audio and not self._computing)
+        self._tipos_btn.setEnabled(has_audio and not self._computing)
         self._gen_btn.setEnabled(has_audio and has_video and has_spec
                                  and not self._computing)
 
@@ -971,6 +996,130 @@ class MainWindow(QMainWindow):
         if resp == QMessageBox.Yes:
             self._save_deteccion(self._strong_events, FUERTE,
                                  self._registro.fuertes.nombre)
+
+    # ── Detección de vocalizaciones por tipo ──────────────────────────────────
+
+    def _run_tipo_detection(self):
+        """Barre el audio entero buscando vocalizaciones; ver core/tipo_detector.py."""
+        if self._audio_engine is None:
+            return
+
+        self._tipos_btn.setEnabled(False)
+        self._tipos_btn.setText("Detectando…")
+        self._status.showMessage("Detectando vocalizaciones…")
+        # Sólo se limpian los resultados de este detector; los de los otros dos
+        # quedan en pantalla y en sus propios archivos.
+        self._tipo_events = []
+        self._refresh_marks()
+
+        worker = TiposWorker(self._audio_engine.samples,
+                             self._audio_engine.sr, self)
+        worker.progress.connect(
+            lambda p: self._status.showMessage(f"Detectando vocalizaciones… {p}%"))
+        worker.error.connect(
+            lambda e: self._err("Error detección de vocalizaciones", e))
+        worker.result.connect(self._on_tipos_done)
+        worker.finished.connect(self._on_tipos_finished)
+        self._start(worker)
+
+    def _on_tipos_finished(self):
+        self._tipos_btn.setEnabled(self._audio_engine is not None
+                                   and not self._computing)
+        self._tipos_btn.setText("Detectar vocalizaciones")
+
+    def _on_tipos_done(self, vocs: list):
+        self._tipo_events = list(vocs)
+        n = len(self._tipo_events)
+        self._refresh_marks()
+
+        if not n:
+            self._status.showMessage("No se encontró ninguna vocalización.")
+            QMessageBox.information(
+                self, "Sin resultados",
+                "No se encontró ninguna vocalización en este audio."
+            )
+            return
+
+        # El resumen por tipo es lo que el usuario quiere ver primero, así que
+        # va en la barra de estado además de en el diálogo.
+        cuenta = Counter(v.tipo for v in self._tipo_events)
+        detalle = ", ".join(f"{c} {t}" for t, c in sorted(cuenta.items()))
+        self._status.showMessage(
+            f"Detección de vocalizaciones: {n} encontrada{'s' if n != 1 else ''} "
+            f"({detalle})."
+        )
+
+        if self._registro is None:
+            QMessageBox.information(
+                self, "Sin video",
+                f"Se detectaron {n} vocalización{'es' if n != 1 else ''} "
+                f"({detalle}), pero no hay un video cargado.\n"
+                "El registro se guarda por video: cargá el video y volvé a "
+                "detectar."
+            )
+            return
+
+        resp = QMessageBox.question(
+            self, "Guardar detección",
+            f"Se detectaron {n} vocalización{'es' if n != 1 else ''}:\n"
+            f"    {detalle}\n\n"
+            f"¿Guardar en registros/{self._registro.tipos.nombre}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if resp == QMessageBox.Yes:
+            self._save_vocalizaciones()
+
+    def _save_vocalizaciones(self):
+        """Guarda las vocalizaciones clasificadas en <video>tipos.csv."""
+        if self._registro is None:
+            return
+        audio_name = (os.path.basename(self._audio_engine.path)
+                      if self._audio_engine is not None else '')
+        fecha_hora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        marcas = [
+            Marca(
+                tipo=TIPIFICADA,
+                inicio_s=v.inicio_s,
+                fin_s=v.fin_s,
+                tipo_vocalizacion=v.tipo,
+                motivo=v.motivo,
+                freq_min_hz=v.fmin_hz,
+                freq_max_hz=v.fmax_hz,
+                peak_energy=v.snr_db,
+                offset_audio_s=self._offset.value(),
+                video=self._registro.video_name,
+                audio=audio_name,
+                fecha_hora=fecha_hora,
+            )
+            for v in self._tipo_events
+        ]
+        try:
+            n_nuevas = self._registro.agregar(marcas)
+            repetidas = len(marcas) - n_nuevas
+            msg = (f"Registro guardado: registros/{self._registro.tipos.nombre} "
+                   f"({n_nuevas} nueva{'s' if n_nuevas != 1 else ''}")
+            msg += f", {repetidas} ya estaban)" if repetidas else ")"
+            self._status.showMessage(msg)
+        except Exception as e:
+            self._err("Error al guardar registro", str(e))
+
+    @staticmethod
+    def _marcas_a_vocalizaciones(marcas: list) -> list:
+        """Marca del CSV → Vocalizacion, que es lo que dibujan los widgets."""
+        return [
+            Vocalizacion(
+                inicio_s=m.inicio_s,
+                fin_s=m.fin_s,
+                tipo=m.tipo_vocalizacion,
+                f0_khz=((m.freq_min_hz or 0.0) + (m.freq_max_hz or 0.0)) / 2000.0,
+                fmin_hz=m.freq_min_hz or 0.0,
+                fmax_hz=m.freq_max_hz or 0.0,
+                snr_db=m.peak_energy or 0.0,
+                motivo=m.motivo,
+            )
+            for m in marcas
+        ]
 
     def _save_deteccion(self, events: list, tipo: str, nombre_archivo: str):
         """

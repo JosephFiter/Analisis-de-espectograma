@@ -17,6 +17,23 @@ COLOR_AUTO   = QColor(220, 50, 50)    # rojo  – detección USV (coincidencia d
 COLOR_FUERTE = QColor(245, 200, 60)   # ámbar – detección de sonidos fuertes
 COLOR_MANUAL = QColor(60, 140, 255)   # azul – marca del usuario (sin tipo asignado)
 
+# Un color por tipo de vocalización, para el detector de tipos. A diferencia
+# de los otros detectores, éste no pinta todas sus marcas del mismo color: el
+# color ES el resultado, así que se puede leer la clasificación de un vistazo
+# sin abrir el CSV.
+COLORES_VOCALIZACION = {
+    'Flat':             QColor(80, 210, 110),    # verde
+    'FM':               QColor(255, 140, 40),    # naranja
+    'harmonic':         QColor(150, 110, 255),   # violeta
+    'complex_harmonic': QColor(230, 70, 200),    # magenta
+}
+COLOR_VOCALIZACION_OTRA = QColor(180, 180, 180)  # gris, por si aparece otro tipo
+
+
+def color_vocalizacion(tipo: str) -> QColor:
+    """Color de una vocalización según el tipo que le asignó el detector."""
+    return COLORES_VOCALIZACION.get(tipo, COLOR_VOCALIZACION_OTRA)
+
 # Marca con un tipo asignado, pero que no coincide con ninguno de los tipos
 # actualmente definidos por el usuario (ej: registros viejos con un nombre
 # de tipo que ya no existe en la lista). Se distingue tanto del azul "sin
@@ -65,11 +82,16 @@ ROW_GAP  = 3    # separación entre filas
 
 # Cada clase de marca va en su propia fila para que nunca se tapen entre sí.
 FILA_AUTO   = 0   # la de abajo, apoyada sobre el borde del espectrograma
-FILA_FUERTE = 1   # la del medio
-FILA_MANUAL = 2   # la de arriba
+FILA_FUERTE = 1
+FILA_TIPO   = 2   # detector de tipos (Flat / FM / harmonic)
+FILA_MANUAL = 3   # la de arriba
 
-# Margen superior que un widget debe reservar para que entren las tres filas.
-MARGEN_SUPERIOR = 3 * (MARKER_H + ROW_GAP) + 2
+# Cuántas filas hay que reservar. Se calcula de las constantes de arriba en
+# vez de escribir el número, así agregar una fila no deja el margen corto.
+N_FILAS = 1 + max(FILA_AUTO, FILA_FUERTE, FILA_TIPO, FILA_MANUAL)
+
+# Margen superior que un widget debe reservar para que entren todas las filas.
+MARGEN_SUPERIOR = N_FILAS * (MARKER_H + ROW_GAP) + 2
 
 
 def base_fila(cr_top: int, fila: int) -> int:

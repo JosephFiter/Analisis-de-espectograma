@@ -27,6 +27,7 @@ class SpectrogramPreview(QWidget):
         self._freqs  = None    # 1-D float array, Hz (after freq filtering)
         self._usv_events = []  # List[USVEvent] en tiempo absoluto del audio
         self._strong_events = []  # List[StrongEvent] en tiempo absoluto del audio
+        self._tipo_events = []    # List[Vocalizacion] del detector de tipos
         self._manual_marks = []  # tiempos (s) absolutos del audio
         self._t0 = 0.0         # instante del audio en el borde izquierdo
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -73,6 +74,11 @@ class SpectrogramPreview(QWidget):
     def set_strong_events(self, events: list):
         """StrongEvent en tiempo absoluto del audio: rectángulos + flecha ámbar."""
         self._strong_events = events if events else []
+        self.update()
+
+    def set_tipo_events(self, events: list):
+        """Vocalizaciones clasificadas: rectángulo + flecha del color del tipo."""
+        self._tipo_events = events if events else []
         self.update()
 
     def clear_usv_events(self):
@@ -212,12 +218,19 @@ class SpectrogramPreview(QWidget):
             return cr.left() + int(((t_abs - self._t0) / t_end) * cr.width())
 
         # ── Detecciones automáticas: rectángulo + flecha ──────────────────────
-        # Los dos detectores se dibujan igual; los distingue el color y la
-        # fila, así se pueden mirar los dos resultados a la vez sin taparse.
+        # Los detectores se dibujan igual; los distingue la fila y el color,
+        # así se pueden mirar todos los resultados a la vez sin taparse.
+        #
+        # El color puede ser fijo (los dos detectores viejos pintan todo de un
+        # color) o depender del evento: el detector de tipos usa un color por
+        # tipo de vocalización, porque ahí el color es el resultado.
         frange = fmax - fmin
         for eventos, color, fila in (
             (self._usv_events,    COLOR_AUTO,   markers.FILA_AUTO),
             (self._strong_events, COLOR_FUERTE, markers.FILA_FUERTE),
+            (self._tipo_events,
+             lambda ev: markers.color_vocalizacion(getattr(ev, 'tipo', '')),
+             markers.FILA_TIPO),
         ):
             if frange <= 0:
                 break
@@ -225,6 +238,8 @@ class SpectrogramPreview(QWidget):
             for ev in eventos:
                 if ev.end_s < self._t0 or ev.start_s > self._t0 + t_end:
                     continue
+
+                c = color(ev) if callable(color) else color
 
                 x0 = _x(ev.start_s)
                 x1 = max(_x(ev.end_s), x0 + 2)   # mínimo 2 px de ancho
@@ -235,11 +250,11 @@ class SpectrogramPreview(QWidget):
                 y_top    = max(y_top,    cr.top())
                 y_bottom = min(y_bottom, cr.bottom())
 
-                p.setPen(QPen(color, 2))
+                p.setPen(QPen(c, 2))
                 p.setBrush(Qt.NoBrush)
                 p.drawRect(x0, y_top, x1 - x0, y_bottom - y_top)
                 # La flecha va sobre el arranque del evento, no sobre el medio.
-                draw_marker(p, x0, y_fila, color)
+                draw_marker(p, x0, y_fila, c)
 
         # ── Marcas manuales: línea + flecha con el color de su tipo ───────────
         y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)

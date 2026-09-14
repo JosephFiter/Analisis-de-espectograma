@@ -76,6 +76,7 @@ class _ScrollingSpecWidget(QWidget):
         self._drag_from    = None
         self._usv_events   = []
         self._strong_events = []
+        self._tipo_events  = []
         self._manual_marks = []   # tiempos (s) relativos a este espectrograma
         self.setStyleSheet("background-color:#111;")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -103,6 +104,10 @@ class _ScrollingSpecWidget(QWidget):
 
     def set_strong_events(self, events: list):
         self._strong_events = events if events else []
+        self.update()
+
+    def set_tipo_events(self, events: list):
+        self._tipo_events = events if events else []
         self.update()
 
     def set_manual_marks(self, marks: list):
@@ -384,9 +389,15 @@ class _ScrollingSpecWidget(QWidget):
             return
 
         # ── Detecciones automáticas, cada detector en su fila y su color ──────
+        # El color puede ser fijo o depender del evento: el detector de tipos
+        # pinta cada marca del color de su tipo, así se lee la clasificación
+        # sin abrir el CSV.
         for eventos, color, fila in (
             (self._usv_events,    COLOR_AUTO,   markers.FILA_AUTO),
             (self._strong_events, COLOR_FUERTE, markers.FILA_FUERTE),
+            (self._tipo_events,
+             lambda ev: markers.color_vocalizacion(getattr(ev, 'tipo', '')),
+             markers.FILA_TIPO),
         ):
             y_fila = markers.base_fila(cr.top(), fila)
             for ev in eventos:
@@ -394,7 +405,7 @@ class _ScrollingSpecWidget(QWidget):
                     continue
                 # La flecha va sobre el arranque del evento, no sobre el medio.
                 x0 = cr.left() + int(max(0.0, (ev.start_s - t_start) / win_dur) * cr.width())
-                draw_marker(p, x0, y_fila, color)
+                draw_marker(p, x0, y_fila, color(ev) if callable(color) else color)
 
         # ── Marcas manuales (flecha con el color de su tipo, fila de arriba) ──
         y_manual = markers.base_fila(cr.top(), markers.FILA_MANUAL)
@@ -680,6 +691,12 @@ class SpecPlayerWindow(QWidget):
     def set_strong_events(self, events: list):
         """Sonidos fuertes (tiempo absoluto del audio) → flechas ámbar."""
         self._spec_widget.set_strong_events(self._a_coords_imagen(events))
+
+    def set_tipo_events(self, events: list):
+        """Vocalizaciones clasificadas → flechas del color de cada tipo."""
+        self._spec_widget.set_tipo_events(
+            [ev.desplazada(-self._t0_sec) for ev in (events or [])]
+        )
 
     def set_manual_marks(self, marks: list):
         """Marcas manuales: lista de (tiempo absoluto del audio, QColor)."""

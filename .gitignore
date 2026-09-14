@@ -31,6 +31,10 @@ output.*
 capturas/
 registros/
 
+# ── Datos del experimento (planillas de la cátedra y audios crudos) ───────────
+excel/
+audios/
+
 # ── Distribución / build ──────────────────────────────────────────────────────
 dist/
 build/
