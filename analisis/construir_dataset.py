@@ -18,7 +18,7 @@ from collections import defaultdict
 import pandas as pd
 
 from core.descriptores import Analizador
-from analisis.planilla import leer_vocalizaciones, ubicar_audios
+from core.planilla import leer_vocalizaciones, ubicar_audios
 
 
 SALIDA = os.path.join('analisis', 'dataset.csv')

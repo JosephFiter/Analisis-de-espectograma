@@ -20,7 +20,7 @@ import numpy as np
 
 from core.clasificador import TIPOS, agrupar
 from core.tipo_detector import DetectorTipos
-from analisis.planilla import (ANOTACIONES_EXTRA, leer_vocalizaciones,
+from core.planilla import (ANOTACIONES_EXTRA, leer_vocalizaciones,
                                ubicar_audios)
 
 import soundfile as sf

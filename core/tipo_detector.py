@@ -32,44 +32,12 @@ from typing import Callable, List, Optional
 import numpy as np
 
 from core.clasificador import Resultado, clasificar
-from core.descriptores import (BANDA_F0, HOP, SNR_MIN_DB, Analizador,
-                               Descriptores)
+from core.descriptores import HOP, Analizador, Descriptores
+from core.parametros import CALIBRADOS, Parametros
 
 
-# Concentración mínima del exceso de energía alrededor del pico.
-#
-# Bastante más baja que el 0.75 del detector viejo, y ése es justamente el
-# arreglo: con armónico, la energía se reparte entre la fundamental y el
-# doble, así que ninguna llamada doble concentra 0.75 en un solo pico. Medido
-# sobre las anotadas, las llamadas arrancan en 0.57 (percentil 10) y el fondo
-# llega a 0.39 (percentil 90); 0.50 parte al medio.
-CONC_MIN = 0.50
-
-# Fracción máxima del espectro encendida a la vez. Es el filtro de ruido
-# mecánico: los golpes y el roce de la rata contra la caja prenden de 0 a
-# 60 kHz de golpe. Sin esto entran como llamadas — pasó en la revisión
-# manual, con una raya ancha en 0:31.33 que parecía una detección buena.
-BROAD_MAX = 0.25
-
-# Duración mínima. Las llamadas anotadas más cortas rondan los 5 ms; lo que
-# aparece por debajo son chasquidos sueltos y el moteado de banda angosta que
-# tienen estas grabaciones.
-MIN_DURACION_MS = 5.0
-
-# Fracción máxima de la banda de abajo de 25 kHz encendida. Ver BANDA_BAJA_MAX
-# en core/descriptores.py: es el filtro de ruido mecánico, y el que más
-# precisión aporta de todos. Barrido sobre ocho sesiones completas:
-#
-#     umbral   recall   falsos   precisión
-#      0.05     61.6%      9        83%
-#      0.15     74.0%     17        76%
-#      0.40     79.5%     18        76%     ← elegido
-#      sin      80.8%     38        61%
-#
-# 0.40 conserva casi todo el recall que se tendría sin filtro (79.5 contra
-# 80.8) y sube la precisión quince puntos. Apretarlo más empieza a costar
-# llamadas rápido sin ganar casi nada.
-RUIDO_BAJO_MAX = 0.40
+# Los umbrales están en core/parametros.py, con la medición que justifica
+# cada uno. Se reciben por `par` para poder moverlos desde el programa.
 
 # Separación mínima entre dos llamadas para contarlas distintas.
 SEPARACION_MS = 15.0
@@ -118,25 +86,15 @@ class DetectorTipos:
 
     Parámetros
     ----------
-    snr_db, conc_min, broad_max
-        Umbrales para decidir qué frame forma parte de una llamada.
-    min_duracion_ms
-        Descarta lo más corto que esto.
+    par
+        Los umbrales con los que trabajar; por defecto, los calibrados. Ver
+        core/parametros.py.
     bloque_s
         Cuánto audio se procesa por vez.
     """
 
-    def __init__(self, snr_db: float = SNR_MIN_DB,
-                 conc_min: float = CONC_MIN,
-                 broad_max: float = BROAD_MAX,
-                 min_duracion_ms: float = MIN_DURACION_MS,
-                 ruido_bajo_max: float = RUIDO_BAJO_MAX,
-                 bloque_s: float = 20.0):
-        self.snr_db = snr_db
-        self.conc_min = conc_min
-        self.broad_max = broad_max
-        self.min_duracion_ms = min_duracion_ms
-        self.ruido_bajo_max = ruido_bajo_max
+    def __init__(self, par: Parametros = CALIBRADOS, bloque_s: float = 20.0):
+        self.par = par
         self.bloque_s = bloque_s
 
     # ── API ─────────────────────────────────────────────────────────────────
@@ -149,7 +107,7 @@ class DetectorTipos:
         if y.ndim > 1:
             y = y.mean(axis=1)
 
-        if BANDA_F0[0] >= sr / 2.0 or len(y) < 4096:
+        if self.par.f0_min_hz >= sr / 2.0 or len(y) < 4096:
             return []
 
         bloque = max(int(self.bloque_s * sr), 1 << 16)
@@ -182,17 +140,18 @@ class DetectorTipos:
         if len(y) < 4096:
             return []
 
-        an = Analizador(y, sr, t0)
+        par = self.par
+        an = Analizador(y, sr, t0, par=par)
         snr, f_pico, conc, broad, ruido_bajo = an.perfil()
 
-        bueno = ((snr >= self.snr_db) & (conc >= self.conc_min) &
-                 (broad <= self.broad_max) &
-                 (ruido_bajo <= self.ruido_bajo_max))
+        bueno = ((snr >= par.snr_min_db) & (conc >= par.conc_min) &
+                 (broad <= par.broad_max) &
+                 (ruido_bajo <= par.ruido_bajo_max))
         if not bueno.any():
             return []
 
         dt = HOP / float(sr)
-        min_frames = max(2, int(self.min_duracion_ms / 1000.0 / dt))
+        min_frames = max(2, int(par.min_duracion_ms / 1000.0 / dt))
         hueco = max(1, int(SEPARACION_MS / 1000.0 / dt))
 
         salida: List[Vocalizacion] = []
@@ -206,10 +165,10 @@ class DetectorTipos:
             d = an.medir(centro)
             if d is None:
                 continue
-            r: Optional[Resultado] = clasificar(d)
+            r: Optional[Resultado] = clasificar(d, par)
             if r is None:
                 continue
-            if d.duracion_ms < self.min_duracion_ms:
+            if d.duracion_ms < par.min_duracion_ms:
                 continue
 
             medio = d.f0_mediana_khz * 1000.0

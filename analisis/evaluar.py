@@ -19,9 +19,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from core.clasificador import (AGRUPAR_ARMONICAS, CORTE_ARMONICO,
-                                   CORTE_MODULACION, CORTE_RECORRIDO_FM,
-                                   TIPOS, agrupar, clasificar)
+from core.clasificador import AGRUPAR_ARMONICAS, TIPOS, agrupar, clasificar
+from core.parametros import CALIBRADOS
 from core.descriptores import Descriptores
 
 TIPOS = list(TIPOS)
@@ -120,9 +119,13 @@ def main() -> int:
 
     print(f'sesiones de calibración: {len(calib)}')
     print(f'sesiones de prueba     : {len(prueba)}  ({", ".join(prueba)})')
-    print(f'\ncortes usados: armónico ≥ {CORTE_ARMONICO}, '
-          f'recorrido FM > {CORTE_RECORRIDO_FM}, '
-          f'modulación > {CORTE_MODULACION}')
+    print(f'\ntaxonomía: {len(TIPOS)} tipos ({", ".join(TIPOS)})')
+    if AGRUPAR_ARMONICAS:
+        print('  harmonic y complex_harmonic se reportan juntas')
+    print(f'cortes: armónico ≥ {CALIBRADOS.corte_armonico}, '
+          f'recorrido FM > {CALIBRADOS.corte_recorrido_fm}'
+          + ('' if AGRUPAR_ARMONICAS
+             else f', modulación > {CALIBRADOS.corte_modulacion}'))
 
     reportar('CALIBRACIÓN (los cortes se ajustaron acá)',
              df[df['sesion'].isin(calib)])

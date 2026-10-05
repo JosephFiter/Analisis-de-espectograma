@@ -39,7 +39,7 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -174,8 +174,65 @@ def _leer_xmaze(path: str) -> Dict[tuple, tuple]:
 
 # ── Registro: las vocalizaciones anotadas ────────────────────────────────────
 
+# Nombres con los que vinieron las planillas originales. Sirven para
+# encontrarlas solas cuando se da una carpeta en vez de los dos archivos, pero
+# no son obligatorios: `leer_vocalizaciones` acepta rutas explícitas para que
+# una planilla nueva, con otro nombre, funcione sin tocar código.
+NOMBRE_REGISTRO = 'registro muestreo sol.xlsx'
+NOMBRE_XMAZE = 'RegistroExperimental.Xmaze.xlsx'
+
+
+def buscar_planillas(carpeta: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Encuentra las dos planillas dentro de una carpeta.
+
+    Primero por el nombre original; si no están, por contenido: el registro es
+    el xlsx que tiene una hoja 'Registro' con columna 'Call_type', y el Xmaze
+    el que tiene celdas 'AudioCancha'. Así la carpeta puede tener los archivos
+    renombrados y se siguen reconociendo.
+    """
+    registro = xmaze = None
+    exacto_reg = os.path.join(carpeta, NOMBRE_REGISTRO)
+    exacto_xm = os.path.join(carpeta, NOMBRE_XMAZE)
+    if os.path.isfile(exacto_reg):
+        registro = exacto_reg
+    if os.path.isfile(exacto_xm):
+        xmaze = exacto_xm
+    if registro and xmaze:
+        return registro, xmaze
+
+    for nombre in sorted(os.listdir(carpeta)):
+        if not nombre.lower().endswith(('.xlsx', '.xlsm')) or nombre.startswith('~$'):
+            continue
+        ruta = os.path.join(carpeta, nombre)
+        try:
+            hojas = pd.ExcelFile(ruta).sheet_names
+        except Exception:
+            continue
+        if registro is None and 'Registro' in hojas:
+            try:
+                cols = pd.read_excel(ruta, sheet_name='Registro', header=1, nrows=0).columns
+                if 'Call_type' in cols:
+                    registro = ruta
+                    continue
+            except Exception:
+                pass
+        if xmaze is None:
+            try:
+                crudo = pd.read_excel(ruta, header=None, nrows=30)
+                if crudo.astype(str).apply(
+                        lambda c: c.str.strip().str.lower().eq('audiocancha')).any().any():
+                    xmaze = ruta
+            except Exception:
+                pass
+
+    return registro, xmaze
+
+
 def leer_vocalizaciones(carpeta_excel: str = 'excel',
-                        incluir_dudosas: bool = False) -> List[Vocalizacion]:
+                        incluir_dudosas: bool = False,
+                        path_registro: Optional[str] = None,
+                        path_xmaze: Optional[str] = None) -> List[Vocalizacion]:
     """
     Lee las dos planillas y devuelve las vocalizaciones anotadas que se pueden
     ubicar en un audio.
@@ -186,10 +243,25 @@ def leer_vocalizaciones(carpeta_excel: str = 'excel',
 
     Por defecto quedan afuera las sesiones de SESIONES_DUDOSAS; con
     `incluir_dudosas=True` se devuelven igual, para poder revisarlas.
-    """
-    p_registro = os.path.join(carpeta_excel, 'registro muestreo sol.xlsx')
-    p_xmaze = os.path.join(carpeta_excel, 'RegistroExperimental.Xmaze.xlsx')
 
+    Se puede pasar `carpeta_excel` y que las encuentre solas, o las dos rutas
+    explícitas — que es lo que hace el programa, donde el usuario elige los
+    archivos.
+    """
+    if path_registro is None or path_xmaze is None:
+        hallado_reg, hallado_xm = buscar_planillas(carpeta_excel)
+        path_registro = path_registro or hallado_reg
+        path_xmaze = path_xmaze or hallado_xm
+    if not path_registro:
+        raise FileNotFoundError(
+            'No se encontró la planilla de registro (un .xlsx con una hoja '
+            '"Registro" y una columna "Call_type").')
+    if not path_xmaze:
+        raise FileNotFoundError(
+            'No se encontró la planilla del experimento (la que dice a qué '
+            'audio corresponde cada rata y ensayo, con filas "AudioCancha").')
+
+    p_registro, p_xmaze = path_registro, path_xmaze
     audios = _leer_xmaze(p_xmaze)
 
     # header=1: la fila 0 son notas sueltas de la autora, los nombres de

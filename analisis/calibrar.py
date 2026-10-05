@@ -60,7 +60,7 @@ def main() -> int:
     con_arm = d['tipo'].isin(['harmonic', 'complex_harmonic']).values
     c_arm, p_arm = _mejor_corte(d['frac_armonico'].values, con_arm,
                                 np.arange(0.05, 1.0, 0.01))
-    print(f'CORTE_ARMONICO      = {c_arm:.2f}   '
+    print(f'corte_armonico      = {c_arm:.2f}   '
           f'(separa {{Flat,FM}} de {{harmonic,complex}}, recall medio {p_arm:.1%})')
     for t in ['Flat', 'FM', 'harmonic', 'complex_harmonic']:
         v = d[d['tipo'] == t]['frac_armonico']
@@ -72,7 +72,7 @@ def main() -> int:
     c_fm, p_fm = _mejor_corte(sin['recorrido_khz'].values,
                               (sin['tipo'] == 'FM').values,
                               np.arange(0.2, 6.0, 0.05))
-    print(f'\nCORTE_RECORRIDO_FM  = {c_fm:.2f}   '
+    print(f'\ncorte_recorrido_fm  = {c_fm:.2f}   '
           f'(Flat vs FM, recall medio {p_fm:.1%}, n={len(sin)})')
     for t in ['Flat', 'FM']:
         v = sin[sin['tipo'] == t]['recorrido_khz']
@@ -84,17 +84,17 @@ def main() -> int:
     c_mod, p_mod = _mejor_corte(arm['mod'].values,
                                 (arm['tipo'] == 'complex_harmonic').values,
                                 np.arange(0.3, 8.0, 0.05))
-    print(f'\nCORTE_MODULACION    = {c_mod:.2f}   '
+    print(f'\ncorte_modulacion    = {c_mod:.2f}   '
           f'(harmonic vs complex, recall medio {p_mod:.1%}, n={len(arm)})')
     for t in ['harmonic', 'complex_harmonic']:
         v = arm[arm['tipo'] == t]['mod']
         print(f'    {t:18s} mediana {v.median():.2f}  '
               f'[{v.quantile(.25):.2f}-{v.quantile(.75):.2f}]  n={len(v)}')
 
-    print('\n— copiar estos valores a analisis/clasificador.py —')
-    print(f'CORTE_ARMONICO = {c_arm:.2f}')
-    print(f'CORTE_RECORRIDO_FM = {c_fm:.2f}')
-    print(f'CORTE_MODULACION = {c_mod:.2f}')
+    print('\n— copiar estos valores a los defaults de core/parametros.py —')
+    print(f'    corte_armonico = {c_arm:.2f}')
+    print(f'    corte_recorrido_fm = {c_fm:.2f}')
+    print(f'    corte_modulacion = {c_mod:.2f}')
     return 0
 
 

@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from core.descriptores import Descriptores
+from core.parametros import CALIBRADOS, Parametros
 
 
 # Los cuatro tipos tal como los anotó la cátedra.
@@ -48,23 +49,9 @@ def agrupar(tipo: str) -> str:
     return tipo
 
 
-# ── Cortes calibrados ────────────────────────────────────────────────────────
-# Fracción de frames con armónico a partir de la cual se considera que la
-# llamada tiene armónico. Coincide con la columna Harmonics(yes/No) de la
-# planilla en el 94% de los casos.
-CORTE_ARMONICO = 0.60
-
-# Recorrido del contorno (p90-p10, en kHz) que separa un trazo plano de uno
-# barrido. La cátedra define Flat como "<5 kHz de variación", pero medido
-# sobre el contorno real los Flat quedan en 0.64 kHz de mediana y los FM en
-# 3.93, así que el corte útil está bastante más abajo que 5.
-CORTE_RECORRIDO_FM = 2.00
-
-# Para las que tienen armónico, cuánta modulación hace que deje de ser una
-# llamada simple. Se combinan recorrido y residuo porque miden cosas
-# distintas: una llamada puede recorrer mucho de forma limpia (rampa) o poco
-# pero retorciéndose (trino corto).
-CORTE_MODULACION = 2.55
+# Los cortes no viven acá: están en core/parametros.py junto con la medición
+# que justifica cada uno, para poder moverlos desde el programa y volver a
+# validar contra la planilla.
 
 
 @dataclass
@@ -78,7 +65,8 @@ def _modulacion(d: Descriptores) -> float:
     return d.recorrido_khz + 2.0 * d.residuo_khz
 
 
-def clasificar(d: Optional[Descriptores]) -> Optional[Resultado]:
+def clasificar(d: Optional[Descriptores],
+               par: Parametros = CALIBRADOS) -> Optional[Resultado]:
     """
     Devuelve el tipo de la llamada, o None si no hay nada que clasificar.
 
@@ -88,23 +76,23 @@ def clasificar(d: Optional[Descriptores]) -> Optional[Resultado]:
     if d is None or d.n_frames < 3:
         return None
 
-    if d.frac_armonico >= CORTE_ARMONICO:
+    if d.frac_armonico >= par.corte_armonico:
         if AGRUPAR_ARMONICAS:
             return Resultado('harmonic',
                              f'armónico en {d.frac_armonico:.0%} de los frames')
         m = _modulacion(d)
-        if m <= CORTE_MODULACION:
+        if m <= par.corte_modulacion:
             return Resultado('harmonic',
                              f'armónico en {d.frac_armonico:.0%} de los frames, '
-                             f'modulación {m:.2f} ≤ {CORTE_MODULACION}')
+                             f'modulación {m:.2f} ≤ {par.corte_modulacion}')
         return Resultado('complex_harmonic',
                          f'armónico en {d.frac_armonico:.0%} de los frames, '
-                         f'modulación {m:.2f} > {CORTE_MODULACION}')
+                         f'modulación {m:.2f} > {par.corte_modulacion}')
 
-    if d.recorrido_khz <= CORTE_RECORRIDO_FM:
+    if d.recorrido_khz <= par.corte_recorrido_fm:
         return Resultado('Flat',
                          f'sin armónico, recorrido {d.recorrido_khz:.2f} kHz '
-                         f'≤ {CORTE_RECORRIDO_FM}')
+                         f'≤ {par.corte_recorrido_fm}')
     return Resultado('FM',
                      f'sin armónico, recorrido {d.recorrido_khz:.2f} kHz '
-                     f'> {CORTE_RECORRIDO_FM}')
+                     f'> {par.corte_recorrido_fm}')

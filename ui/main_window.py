@@ -17,12 +17,13 @@ from PyQt5.QtGui import QImage
 from PyQt5.QtCore import Qt, pyqtSignal
 
 from core.audio_engine import AudioEngine
-from core.video_engine import VideoEngine
+from core.video_engine import VideoEngine, VideoVacio
 from core.spectrogram_engine import SpectrogramSettings
 from core.usv_detector import USVEvent
 from core.registro import (RegistroVideo, Marca, MANUAL, AUTOMATICO,
                            FUERTE, TIPIFICADA)
 from core import tipos_captura as tipos_captura_store
+from core import config_validacion, planilla
 
 from workers.audio_load_worker import AudioLoadWorker
 from workers.video_load_worker import VideoLoadWorker
@@ -30,11 +31,14 @@ from workers.spectrogram_worker import SpectrogramWorker
 from workers.usv_worker import USVWorker
 from workers.strong_worker import StrongWorker
 from workers.tipos_worker import TiposWorker
+from workers.validacion_worker import ValidacionWorker
 from core.tipo_detector import Vocalizacion
 from ui.dual_player import VideoPlayerWindow, SpecPlayerWindow, capture_windows
 from ui import markers
 
 from ui.spectrogram_preview import SpectrogramPreview
+from ui.parametros_panel import ParametrosPanel
+from ui.ventana_comparacion import VentanaComparacion
 
 
 _COLORMAPS = ['viridis', 'plasma', 'inferno', 'magma',
@@ -174,6 +178,7 @@ class MainWindow(QMainWindow):
         self._manual_marks = []     # marcas manuales, en tiempo absoluto del audio
         self._spec_t0      = 0.0    # instante del audio en el borde izq. del espectrograma
         self._registro     = None   # RegistroVideo del video cargado
+        self._val_win      = None   # ventana del informe de comparación
 
         self._build_ui()
         self._status = QStatusBar()
@@ -431,6 +436,10 @@ class MainWindow(QMainWindow):
         gl3.addWidget(self._build_tipos_captura_box())
 
         lv.addWidget(g3)
+
+        # Step 4 ─ medirse contra la planilla
+        lv.addWidget(self._build_validacion_box())
+
         lv.addStretch()
 
         scroll = QScrollArea()
@@ -763,14 +772,13 @@ class MainWindow(QMainWindow):
 
     def _refresh_buttons(self):
         has_audio = self._audio_engine is not None
-        has_video = self._video_engine is not None
         has_spec  = self._spec_rgba is not None
         self._prev_btn.setEnabled(has_audio and not self._computing)
         self._usv_btn.setEnabled(has_audio and not self._computing)
         self._strong_btn.setEnabled(has_audio and not self._computing)
         self._tipos_btn.setEnabled(has_audio and not self._computing)
-        self._gen_btn.setEnabled(has_audio and has_video and has_spec
-                                 and not self._computing)
+        # No se pide video: sin él las ventanas se abren igual, en negro.
+        self._gen_btn.setEnabled(has_audio and has_spec and not self._computing)
 
     # ── Spectrogram ───────────────────────────────────────────────────────────
 
@@ -1192,10 +1200,21 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Sin espectrograma",
                                     "Primero presioná Ver espectrograma.")
             return
-        if self._video_engine is None:
-            QMessageBox.information(self, "Sin video",
-                                    "Primero cargá un video.")
-            return
+
+        # Sin video se abre igual, con la imagen en negro: el espectrograma
+        # desplazable sirve por sí solo, y muchas grabaciones no tienen video.
+        # La duración sale del audio, que es lo que hay que recorrer.
+        engine_video = self._video_engine
+        sin_video = engine_video is None
+        if sin_video:
+            duracion = (self._audio_engine.duration
+                        if self._audio_engine is not None else 0.0)
+            if duracion <= 0:
+                QMessageBox.information(
+                    self, "Sin audio",
+                    "Hace falta un audio cargado para abrir las ventanas.")
+                return
+            engine_video = VideoVacio(duracion)
 
         # Cerrar ventanas previas
         for attr in ('_video_win', '_spec_win', '_spec_win2'):
@@ -1214,7 +1233,9 @@ class MainWindow(QMainWindow):
             (nombre, markers.color_for_boton_index(i))
             for i, nombre in enumerate(self._tipos_captura_actuales())
         ][:VideoPlayerWindow.MAX_TIPOS_CAPTURA]
-        self._video_win = VideoPlayerWindow(self._video_engine, capture_types=capture_types)
+        self._video_win = VideoPlayerWindow(engine_video, capture_types=capture_types)
+        if sin_video:
+            self._video_win.setWindowTitle("Video — (sin video cargado)")
         self._video_win.closed.connect(lambda: setattr(self, '_video_win', None))
         self._video_win.capture_requested.connect(self._do_capture)
 
@@ -1261,9 +1282,14 @@ class MainWindow(QMainWindow):
             self._spec_win2.show()
 
         n = 3 if self._spec_win2 is not None else 2
-        self._status.showMessage(
-            f"{n} ventanas abiertas. Reproducí el video para sincronizar los espectrogramas."
-        )
+        if sin_video:
+            self._status.showMessage(
+                f"{n} ventanas abiertas (sin video). Usá play o las flechas "
+                "para recorrer el espectrograma.")
+        else:
+            self._status.showMessage(
+                f"{n} ventanas abiertas. Reproducí el video para sincronizar "
+                "los espectrogramas.")
 
     # ── Captura de pantalla ───────────────────────────────────────────────────
 
@@ -1340,6 +1366,204 @@ class MainWindow(QMainWindow):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    # ── Paso 4: comparar contra la planilla ───────────────────────────────────
+
+    def _build_validacion_box(self) -> QWidget:
+        """
+        Caja plegada con los umbrales del detector y el botón de validación.
+
+        Va plegada porque no hace falta para el uso normal: sólo se abre cuando
+        se quiere medir qué tan bien anda el detector, o experimentar con los
+        umbrales.
+        """
+        caja = _CollapsibleBox("Paso 4 — Comparar contra la planilla",
+                               expanded=False)
+        lay = caja.content_layout()
+
+        self._val_cfg = config_validacion.cargar()
+
+        self._val_rutas_lbl = QLabel()
+        self._val_rutas_lbl.setWordWrap(True)
+        self._val_rutas_lbl.setStyleSheet("font-size:11px;")
+        lay.addWidget(self._val_rutas_lbl)
+
+        elegir = QPushButton("Elegir planillas y carpeta de audios…")
+        elegir.setToolTip(
+            "La planilla de vocalizaciones (la de los Call_type), la del\n"
+            "experimento (la que dice qué audio corresponde a cada rata y\n"
+            "ensayo) y la carpeta donde están los .wav.\n"
+            "Se recuerdan para la próxima vez."
+        )
+        elegir.clicked.connect(self._elegir_fuentes_validacion)
+        lay.addWidget(elegir)
+
+        self._par_panel = ParametrosPanel()
+        self._par_panel.set_parametros(self._val_cfg.parametros)
+        lay.addWidget(self._par_panel)
+
+        self._val_btn = QPushButton("Comparar contra la planilla")
+        self._val_btn.setFixedHeight(32)
+        self._val_btn.setStyleSheet("font-weight:bold;")
+        self._val_btn.setToolTip(
+            "Corre el detector, con los umbrales de arriba, sobre todos los\n"
+            "audios que pueda cruzar con la planilla, y compara con lo que\n"
+            "está anotado a mano.\n"
+            "Tarda varios minutos y se puede cancelar."
+        )
+        self._val_btn.clicked.connect(self._run_validacion)
+        lay.addWidget(self._val_btn)
+
+        self._refrescar_rutas_validacion()
+        return caja
+
+    def _refrescar_rutas_validacion(self):
+        cfg = self._val_cfg
+        if cfg.completa and not cfg.faltante():
+            self._val_rutas_lbl.setText(
+                f"✓ {os.path.basename(cfg.path_registro)}\n"
+                f"✓ {os.path.basename(cfg.path_xmaze)}\n"
+                f"✓ audios: {cfg.raiz_audios}")
+            self._val_rutas_lbl.setStyleSheet("color:#7dca7d; font-size:11px;")
+        else:
+            self._val_rutas_lbl.setText(f"Falta elegir: {cfg.faltante()}")
+            self._val_rutas_lbl.setStyleSheet("color:#d0a060; font-size:11px;")
+        self._val_btn.setEnabled(cfg.completa and not cfg.faltante())
+
+    def _elegir_fuentes_validacion(self):
+        """
+        Pide las dos planillas y la carpeta de audios.
+
+        Primero se ofrece elegir la carpeta de las planillas y se intenta
+        reconocerlas solas por su contenido; sólo si no aparecen se piden una
+        por una. Con la estructura habitual alcanza con un par de clics.
+        """
+        carpeta = QFileDialog.getExistingDirectory(
+            self, "Carpeta donde están las planillas (.xlsx)",
+            os.path.dirname(self._val_cfg.path_registro) or os.getcwd())
+        if not carpeta:
+            return
+
+        try:
+            reg, xm = planilla.buscar_planillas(carpeta)
+        except OSError as e:
+            self._err("No se pudo leer la carpeta", str(e))
+            return
+
+        if not reg:
+            reg, _ = QFileDialog.getOpenFileName(
+                self, "Planilla de vocalizaciones (hoja 'Registro')",
+                carpeta, "Excel (*.xlsx *.xlsm)")
+            if not reg:
+                return
+        if not xm:
+            xm, _ = QFileDialog.getOpenFileName(
+                self, "Planilla del experimento (filas 'AudioCancha')",
+                carpeta, "Excel (*.xlsx *.xlsm)")
+            if not xm:
+                return
+
+        audios = QFileDialog.getExistingDirectory(
+            self, "Carpeta raíz de los audios",
+            self._val_cfg.raiz_audios or os.getcwd())
+        if not audios:
+            return
+
+        self._val_cfg.path_registro = reg
+        self._val_cfg.path_xmaze = xm
+        self._val_cfg.raiz_audios = audios
+        config_validacion.guardar(self._val_cfg)
+        self._refrescar_rutas_validacion()
+        self._status.showMessage("Planillas y audios configurados.")
+
+    def _run_validacion(self):
+        cfg = self._val_cfg
+        if not cfg.completa or cfg.faltante():
+            return
+        cfg.parametros = self._par_panel.parametros()
+        config_validacion.guardar(cfg)
+
+        self._val_btn.setEnabled(False)
+        self._val_btn.setText("Comparando…")
+
+        dlg = QProgressDialog("Comparando contra la planilla…", "Cancelar",
+                              0, 100, self)
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+
+        worker = ValidacionWorker(cfg, self)
+        worker.progress.connect(dlg.setValue)
+        worker.status.connect(dlg.setLabelText)
+        worker.status.connect(self._status.showMessage)
+        worker.error.connect(lambda e: self._err("Error en la comparación", e))
+        worker.result.connect(self._on_validacion_done)
+        worker.finished.connect(dlg.close)
+        worker.finished.connect(self._on_validacion_finished)
+        # El barrido es largo: cancelar tiene que cortarlo de verdad, no sólo
+        # cerrar el diálogo.
+        dlg.canceled.connect(worker.abort)
+        self._start(worker)
+
+    def _on_validacion_finished(self):
+        self._val_btn.setEnabled(self._val_cfg.completa
+                                 and not self._val_cfg.faltante())
+        self._val_btn.setText("Comparar contra la planilla")
+
+    def _on_validacion_done(self, resultado):
+        if not resultado.casos:
+            QMessageBox.information(
+                self, "Sin datos",
+                "No se pudo cruzar ninguna vocalización de la planilla con los "
+                "audios. Revisá que la carpeta de audios sea la correcta.")
+            return
+
+        self._status.showMessage(resultado.resumen())
+
+        # Las rutas se recalculan para que la tabla pueda abrir cada audio.
+        try:
+            anotaciones = planilla.leer_vocalizaciones(
+                path_registro=self._val_cfg.path_registro,
+                path_xmaze=self._val_cfg.path_xmaze)
+            rutas = planilla.ubicar_audios(anotaciones, self._val_cfg.raiz_audios)
+        except Exception:
+            rutas = {}
+
+        # Ventana suelta: queda abierta al costado mientras se sigue usando el
+        # programa, que es lo que permite ir clickeando errores y mirarlos en
+        # el espectrograma sin cerrarla cada vez.
+        if self._val_win is not None:
+            self._val_win.close()
+        self._val_win = VentanaComparacion(resultado, rutas)
+        self._val_win.ir_a.connect(self._ir_a_instante)
+        self._val_win.closed.connect(lambda: setattr(self, '_val_win', None))
+        self._val_win.show()
+        self._val_win.raise_()
+        self._val_win.activateWindow()
+
+    def _ir_a_instante(self, ruta: str, t_s: float):
+        """
+        Carga el audio de una fila de la comparación y deja el espectrograma
+        parado en ese instante.
+
+        Si ya es el audio cargado no se vuelve a leer: son archivos de decenas
+        de MB y recargarlos por cada doble clic haría la revisión insoportable.
+        """
+        ya_cargado = (self._audio_engine is not None and
+                      os.path.normpath(self._audio_engine.path) ==
+                      os.path.normpath(ruta))
+        if not ya_cargado:
+            self._load_audio(ruta)
+            self._status.showMessage(
+                f"Audio cargado: {os.path.basename(ruta)} — generá el "
+                f"espectrograma para ver el instante {t_s:.2f} s")
+            return
+
+        for win in (self._spec_win, self._spec_win2):
+            if win is not None:
+                win.receive_position(t_s + self._offset.value())
+        self._status.showMessage(
+            f"{os.path.basename(ruta)} — instante {t_s:.2f} s")
+
     def _start(self, worker):
         self._workers.append(worker)
         worker.finished.connect(
@@ -1362,8 +1586,11 @@ class MainWindow(QMainWindow):
         # Persistir los tipos de captura manual definidos en esta sesión
         tipos_captura_store.guardar(self._tipos_captura_actuales())
 
-        # Cerrar ventanas duales si están abiertas
-        for win in (self._video_win, self._spec_win, self._spec_win2):
+        # Cerrar ventanas duales y el informe de comparación si quedaron
+        # abiertos: ahora que el informe no es modal, puede sobrevivir a la
+        # ventana principal y dejar el proceso colgado.
+        for win in (self._video_win, self._spec_win, self._spec_win2,
+                    self._val_win):
             if win is not None:
                 try:
                     win.close()

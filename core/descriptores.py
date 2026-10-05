@@ -39,80 +39,18 @@ import numpy as np
 import librosa
 import soundfile as sf
 
+from core.parametros import CALIBRADOS, Parametros
+
 
 N_FFT = 512
 HOP = 128
 
-# Dónde buscar la fundamental. El techo en 70 kHz evita que se tome el
-# armónico por fundamental.
+# Los umbrales de la detección NO viven acá: están en core/parametros.py, con
+# la medición que justifica cada uno. Se pasan por `par` para poder moverlos
+# desde el programa y volver a validar contra la planilla.
 #
-# El piso en 38 kHz sale de medir, y cuesta algo: hay vocalizaciones anotadas
-# hasta en 30.8 kHz y con este piso se pierden 8 de 213 (4 complex_harmonic,
-# 2 harmonic, 2 Flat). A cambio, en 30-38 kHz estas grabaciones tienen una
-# zona de ruido que producía dos tercios de los falsos positivos del barrido.
-# Medido sobre ocho sesiones completas:
-#
-#     piso    verdaderos   falsos   precisión
-#     30 kHz     64/64       78        45%
-#     38 kHz     61/64       25        71%
-#     44 kHz     57/64        4        93%
-#
-# 38 es el punto donde se corta casi todo el ruido sin empezar a comerse las
-# llamadas. Si en otro experimento aparecen llamadas de 22 kHz (las
-# aversivas), este piso las deja afuera por completo y hay que bajarlo.
-BANDA_F0 = (38_000.0, 70_000.0)
-
-# Banda donde se mide si el espectro está "encendido de golpe". Va más arriba
-# que BANDA_F0 porque tiene que incluir el armónico, y empieza en 30 kHz
-# porque abajo de eso hay ruido de sala permanente: medir la banda ancha
-# sobre el espectro completo hace que casi todo frame parezca de banda ancha
-# y el filtro termina descartando las llamadas en vez del ruido.
-BANDA_ANALISIS = (30_000.0, 110_000.0)
-
-# Techo de la banda "audible", la que sirve para reconocer ruido mecánico.
-#
-# Una vocalización de rata es ultrasónica: abajo de 25 kHz no deja nada. Un
-# golpe, un paso o el roce de la rata contra la caja, en cambio, prenden desde
-# el piso del espectro. Así que energía acá abajo es la firma de que el evento
-# no es una llamada, y resulta ser el filtro de ruido más efectivo de todos
-# los que se probaron.
-BANDA_BAJA_MAX = 25_000.0
-
-# Ventana alrededor de 2·f0 donde se busca el armónico, como fracción.
-#
-# El valor es más ancho de lo que parecería razonable, y es a propósito. En el
-# papel conviene angosta: el armónico cae en 2·f0 con precisión de uno o dos
-# bins, y ensanchar sólo agrega la chance de contar otra cosa — en particular
-# el artefacto de banda angosta de 97.7-98.6 kHz que tienen estas grabaciones,
-# que queda al lado del armónico de una llamada plana de 48.3 kHz (96.7).
-#
-# Pero medido gana la ancha. Barrido sobre las sesiones de calibración: 0.02 y
-# 0.08 empatan en el corte binario "hay armónico o no" (87.7% de recall
-# medio), y de punta a punta sobre los tres tipos la ancha da 75.3% de recall
-# promedio contra 71.6% de la angosta. Con la angosta se escapan armónicos
-# reales que caen un bin afuera y esas llamadas terminan clasificadas Flat,
-# que cuesta más caro que los tres Flat que el artefacto arruina.
-#
-# Nota de un intento fallido: se probó descontar el nivel de fondo local de
-# esa banda para que el artefacto se cancelara solo. Empeora en las doce
-# combinaciones probadas, porque las llamadas vienen en ráfagas y los vecinos
-# de una llamada con armónico son otras llamadas con armónico: el descuento
-# termina borrando la señal buena. Queda sin descontar.
-TOL_ARMONICO = 0.08
-
-# Umbrales medidos sobre las 247 vocalizaciones anotadas, no elegidos a mano.
-# El fondo llega a 14.8 dB en su percentil 90 y las llamadas arrancan en
-# 21 dB (percentil 10), así que 18 dB parte al medio sin comerse ninguna.
-SNR_MIN_DB = 18.0
-# Umbral para estirar la llamada una vez encontrada. Una llamada entra y sale
-# gradualmente, así que cortarla con el mismo umbral con que se la detecta le
-# come las puntas: medido contra las duraciones de la planilla, un umbral
-# único devolvía unos 10 ms donde la anotación decía 20. Se la busca con
-# SNR_MIN_DB y se la extiende mientras siga por encima de esto.
-SNR_EXT_DB = 10.0
-# El armónico viene bastante más débil que la fundamental: pedirle el mismo
-# SNR lo perdería en la mitad de las llamadas.
-SNR_ARMONICO_DB = 10.0
+# N_FFT y HOP sí quedan fijos: no son un umbral a ajustar sino la resolución
+# con la que se mide, y cambiarla invalidaría toda la calibración.
 
 
 @dataclass
@@ -163,7 +101,9 @@ class Analizador:
     contados desde su propio comienzo.
     """
 
-    def __init__(self, muestras: np.ndarray, sr: int, t0: float = 0.0):
+    def __init__(self, muestras: np.ndarray, sr: int, t0: float = 0.0,
+                 par: Parametros = CALIBRADOS):
+        self.par = par
         y = np.asarray(muestras, dtype=np.float32)
         if y.ndim > 1:
             y = y.mean(axis=1)
@@ -180,21 +120,22 @@ class Analizador:
         self.r_db = 10.0 * np.log10(np.maximum(potencia / fondo, 1e-12))
         self.t = t0 + np.arange(self.r_db.shape[1]) * HOP / sr
 
-        lo, hi = BANDA_F0
+        lo, hi = par.banda_f0
         self._banda = (self.freqs >= lo) & (self.freqs <= min(hi, sr / 2.0))
         self._f_banda = self.freqs[self._banda]
         self._r_banda = self.r_db[self._banda]
 
-        alo, ahi = BANDA_ANALISIS
+        alo, ahi = par.banda_analisis
         self._banda_analisis = ((self.freqs >= alo) &
                                 (self.freqs <= min(ahi, sr / 2.0)))
-        self._banda_baja = self.freqs <= BANDA_BAJA_MAX
+        self._banda_baja = self.freqs <= par.banda_baja_max_hz
 
     @classmethod
-    def desde_archivo(cls, path: str) -> 'Analizador':
+    def desde_archivo(cls, path: str,
+                      par: Parametros = CALIBRADOS) -> 'Analizador':
         """Atajo para el trabajo offline, que sí arranca desde un wav."""
         y, sr = sf.read(path, dtype='float32')
-        return cls(y, sr)
+        return cls(y, sr, par=par)
 
     # ── Perfil por frame ────────────────────────────────────────────────────
 
@@ -238,7 +179,7 @@ class Analizador:
     # ── Contorno ────────────────────────────────────────────────────────────
 
     def contorno(self, t_centro: float, ventana_s: float = 0.35,
-                 snr_min: float = SNR_MIN_DB) -> Optional[Contorno]:
+                 snr_min: Optional[float] = None) -> Optional[Contorno]:
         """
         Aísla la llamada que hay alrededor de `t_centro` y devuelve su trazo.
 
@@ -247,6 +188,8 @@ class Analizador:
         en estas grabaciones es común que haya otra llamada a 200 ms, y
         mezclarlas daría un contorno que no es de ninguna de las dos.
         """
+        if snr_min is None:
+            snr_min = self.par.snr_min_db
         sel = (self.t >= t_centro - ventana_s) & (self.t <= t_centro + ventana_s)
         if not sel.any():
             return None
@@ -280,25 +223,25 @@ class Analizador:
             arm_db=self._energia_armonico(idx, f0_grupo),
         )
 
-    @staticmethod
-    def _extender(grupo: np.ndarray, snr: np.ndarray, f0: np.ndarray,
+    def _extender(self, grupo: np.ndarray, snr: np.ndarray, f0: np.ndarray,
                   salto_max_hz: float = 4_000.0) -> np.ndarray:
         """
         Estira el trazo hacia los costados mientras la señal siga presente.
 
-        Se frena cuando la energía cae por debajo de SNR_EXT_DB o cuando la
+        Se frena cuando la energía cae por debajo de snr_ext_db o cuando la
         frecuencia pega un salto: lo segundo evita que la extensión se
         enganche con la llamada siguiente, que en estas grabaciones suele
         estar a 200 ms.
         """
+        ext = self.par.snr_ext_db
         g = list(grupo)
         i = g[0]
-        while i - 1 >= 0 and snr[i - 1] >= SNR_EXT_DB \
+        while i - 1 >= 0 and snr[i - 1] >= ext \
                 and abs(f0[i - 1] - f0[i]) <= salto_max_hz:
             i -= 1
             g.insert(0, i)
         j = g[-1]
-        while j + 1 < len(snr) and snr[j + 1] >= SNR_EXT_DB \
+        while j + 1 < len(snr) and snr[j + 1] >= ext \
                 and abs(f0[j + 1] - f0[j]) <= salto_max_hz:
             j += 1
             g.append(j)
@@ -359,16 +302,16 @@ class Analizador:
             f_arm = 2.0 * float(f)
             if f_arm > nyq:
                 continue
-            ventana = ((self.freqs >= f_arm * (1.0 - TOL_ARMONICO)) &
-                       (self.freqs <= f_arm * (1.0 + TOL_ARMONICO)))
+            tol = self.par.tol_armonico
+            ventana = ((self.freqs >= f_arm * (1.0 - tol)) &
+                       (self.freqs <= f_arm * (1.0 + tol)))
             if ventana.any():
                 out[i] = self.r_db[ventana, col].max()
         return out
 
     # ── Descriptores ────────────────────────────────────────────────────────
 
-    @staticmethod
-    def describir(c: Contorno) -> Descriptores:
+    def describir(self, c: Contorno) -> Descriptores:
         f_khz = c.f0 / 1000.0
         t_ms = (c.t - c.t[0]) * 1000.0
 
@@ -388,7 +331,8 @@ class Analizador:
         saltos = int((np.abs(np.diff(f_khz)) > 3.0).sum())
 
         finito = np.isfinite(c.arm_db)
-        frac = float((c.arm_db[finito] >= SNR_ARMONICO_DB).mean()) if finito.any() else 0.0
+        frac = (float((c.arm_db[finito] >= self.par.snr_armonico_db).mean())
+                if finito.any() else 0.0)
 
         return Descriptores(
             duracion_ms=c.duracion_ms,

@@ -43,3 +43,44 @@ class VideoEngine:
 
     def __del__(self):
         self.release()
+
+
+class VideoVacio(VideoEngine):
+    """
+    Un video que no existe: devuelve cuadros negros y dura lo que dure el audio.
+
+    Sirve para poder abrir las ventanas de reproducción cuando sólo hay audio.
+    Muchas grabaciones se analizan sin video, y hasta ahora eso dejaba afuera
+    el espectrograma desplazable, que es donde se revisan las marcas.
+
+    Se hace como un VideoEngine en vez de enseñar a la ventana a convivir con
+    `None`: así el reproductor, la barra de tiempo, los atajos de teclado y la
+    sincronización siguen funcionando exactamente igual, y el único cambio es
+    que lo que se dibuja arriba es negro.
+    """
+
+    # Cuadros por segundo de mentira. Define el paso de las flechas ← →, así
+    # que conviene que sea parecido a un video real.
+    FPS = 30.0
+
+    def __init__(self, duracion_s: float, ancho: int = 640, alto: int = 360):
+        super().__init__()
+        self.path = ''
+        self.fps = self.FPS
+        self.duration = max(0.0, float(duracion_s))
+        self.frame_count = max(1, int(round(self.duration * self.fps)))
+        self.width = ancho
+        self.height = alto
+        self._negro = np.zeros((alto, ancho, 3), dtype=np.uint8)
+
+    @property
+    def es_vacio(self) -> bool:
+        return True
+
+    def get_frame(self, frame_idx: int) -> np.ndarray:
+        # Siempre el mismo arreglo: no hay nada que leer y copiarlo por cada
+        # cuadro sería tirar memoria al pedo.
+        return self._negro
+
+    def release(self):
+        pass

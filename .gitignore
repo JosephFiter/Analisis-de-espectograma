@@ -35,6 +35,9 @@ registros/
 excel/
 audios/
 
+# Rutas locales de la validación: apuntan a carpetas de esta máquina.
+config/validacion.json
+
 # ── Distribución / build ──────────────────────────────────────────────────────
 dist/
 build/
