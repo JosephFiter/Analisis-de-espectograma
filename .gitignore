@@ -35,6 +35,10 @@ registros/
 excel/
 audios/
 
+# Paquete armado por analisis/preparar_notebook.py: son copias de los datos
+# de arriba, no van al repositorio.
+mandarANotebook/
+
 # Rutas locales de la validación: apuntan a carpetas de esta máquina.
 config/validacion.json
 
