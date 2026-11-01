@@ -35,8 +35,9 @@ _CONTROLES = [
     ('min_duracion_ms', 'Duración mínima', 0.5, 60.0, 0.5, 1, ' ms',
      'Descarta lo más corto que esto: chasquidos y moteado del equipo.'),
     ('ruido_bajo_max', 'Ruido grave máx.', 0.0, 1.0, 0.05, 2, '',
-     'Cuánta energía se tolera por debajo de 25 kHz. Una rata no deja nada\n'
-     'ahí y un golpe sí: es el filtro de ruido mecánico.'),
+     'Cuánta energía se tolera por debajo de 25 kHz: es el filtro de ruido\n'
+     'mecánico. Sólo se aplica a las llamadas cuya fundamental cae cerca de\n'
+     'ese ruido, porque una rata puede vocalizar mientras se mueve.'),
     ('corte_armonico', 'Corte de armónico', 0.0, 1.0, 0.05, 2, '',
      'En qué fracción de la llamada tiene que haber energía en el doble de\n'
      'su frecuencia para considerarla “harmonic”.'),

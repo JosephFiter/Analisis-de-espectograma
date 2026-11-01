@@ -144,9 +144,12 @@ class DetectorTipos:
         an = Analizador(y, sr, t0, par=par)
         snr, f_pico, conc, broad, ruido_bajo = an.perfil()
 
+        # El veto por ruido grave sólo se aplica a los frames cuya
+        # fundamental cae cerca de ese ruido: ver ruido_bajo_f0_hz.
+        veto_bajo = ((ruido_bajo > par.ruido_bajo_max) &
+                     (f_pico < par.ruido_bajo_f0_hz))
         bueno = ((snr >= par.snr_min_db) & (conc >= par.conc_min) &
-                 (broad <= par.broad_max) &
-                 (ruido_bajo <= par.ruido_bajo_max))
+                 (broad <= par.broad_max) & ~veto_bajo)
         if not bueno.any():
             return []
 

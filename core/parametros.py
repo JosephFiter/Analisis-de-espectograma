@@ -30,51 +30,96 @@ class Parametros:
     # ── Qué cuenta como llamada ──────────────────────────────────────────────
     snr_min_db: float = 18.0
     """Cuántos dB tiene que sobresalir el pico sobre el fondo de su banda.
-    El fondo llega a 14.8 dB en su percentil 90 y las llamadas arrancan en 21
-    (percentil 10). Bajarlo encuentra más llamadas débiles y más ruido."""
+
+    PENDIENTE: medido sobre las 217 anotadas, este valor deja afuera 56 — el
+    26% — y la cátedra lo marcó caso por caso ("pocos decibeles, pero se ve").
+    La llamada anotada más débil llega a 11.9 dB. Bajarlo a secas no sirve: el
+    fondo llega a 14.8 dB en su percentil 90, así que un corte plano por debajo
+    de eso inunda de falsos positivos (probado: 2.5% de precisión). Hace falta
+    separar la llamada del fondo por otra vía que no sea la energía sola."""
 
     conc_min: float = 0.50
     """Qué parte del exceso de energía cae alrededor del pico, de 0 a 1.
-    Separa un tono de un golpe. Subirlo de 0.75 fue lo que rompía el detector
-    viejo: una llamada con armónico reparte su energía en dos bandas y nunca
-    llega a esa concentración."""
+    Separa un tono de un golpe. El 0.75 del detector viejo perdía casi todas
+    las llamadas con armónico, que reparten su energía en dos bandas.
+
+    PENDIENTE: este valor rechaza 22 de las 217 anotadas; con 0.30 serían 2, y
+    medido en una ablación de 4 sesiones bajarlo no agregó ni un falso
+    positivo."""
 
     f0_min_hz: float = 38_000.0
     f0_max_hz: float = 70_000.0
     """Dónde se busca la fundamental. El techo evita tomar el armónico por
-    fundamental. El piso cuesta algo: hay vocalizaciones anotadas hasta en
-    30.8 kHz y con 38 kHz se pierden 8 de 217. A cambio, en 30-38 kHz hay una
-    zona de ruido que producía dos tercios de los falsos positivos. Medido
-    sobre ocho sesiones completas:
+    fundamental.
 
-        piso      verdaderos   falsos   precisión
-        30 kHz      64/64        78        45%
-        38 kHz      61/64        25        71%
-        44 kHz      57/64         4        93%
+    PENDIENTE: el piso de 38 kHz deja afuera 27 de las 217 anotadas — el 12% —
+    y la cátedra lo marcó explícitamente ("pegada a la banda de ruido y por
+    debajo de 40 kHz", "parece harmonic entre 30 y 60 kHz; el detector no
+    parece preparado para ese rango").
 
-    Para llamadas aversivas de 22 kHz hay que bajar el piso."""
+        piso      anotadas que deja afuera
+        30 kHz              1
+        32 kHz              4
+        36 kHz             16
+        38 kHz             27    ← el actual
+
+    Medido en una ablación de 4 sesiones, bajarlo a 32 kHz no agregó ni un
+    falso positivo. Para llamadas aversivas de 22 kHz habría que bajarlo más."""
 
     min_duracion_ms: float = 5.0
     """Duración mínima. Lo más corto que esto son chasquidos y moteado."""
 
     ruido_bajo_max: float = 0.40
-    """Fracción máxima de la banda de abajo de 25 kHz encendida. Una
-    vocalización de rata no deja nada ahí y un golpe sí: es el filtro de ruido
-    mecánico, y el que más precisión aporta de todos. Barrido:
+    """Fracción máxima de la banda de abajo de 25 kHz encendida.
 
-        umbral    recall   falsos   precisión
-         0.05      61.6%      9        83%
-         0.15      74.0%     17        76%
-         0.40      79.5%     18        76%    ← elegido
-         sin       80.8%     38        61%
+    Mata el ruido mecánico: un golpe en la jaula es una raya vertical que
+    prende todo el espectro, y tiene tanto pico en la banda USV como una
+    llamada, así que por energía sola no se lo puede separar.
 
-    0.40 conserva casi todo el recall y sube la precisión quince puntos."""
+    El valor no se toca, pero el filtro ya no se aplica a todos los frames:
+    ver `ruido_bajo_f0_hz`, que es donde está la corrección."""
+
+    ruido_bajo_f0_hz: float = 48_000.0
+    """Por encima de esta fundamental, el veto de `ruido_bajo` no se aplica.
+
+    El filtro de ruido grave estaba vetando llamadas buenas, y el motivo no
+    era el umbral sino que se aplicaba a todo. El veto tiene sentido sólo
+    cuando la fundamental está pegada al ruido: ahí lo que el detector toma
+    por llamada suele ser **la punta de arriba del manchón** que sube desde
+    0 kHz, y la energía de abajo es la prueba de que es un solo objeto. Si la
+    fundamental está bien despegada son dos sonidos distintos y lo que pase
+    abajo de 25 kHz no dice nada de la llamada.
+
+    Medido sobre las 217 anotadas, contra el detector anterior:
+
+        corte      halladas   falsos   precisión
+        (ninguno)   178        50       77.7%    ← antes
+        48 kHz      180        50       77.9%    ← elegido
+        45 kHz      181        52       77.4%
+
+    Con 48 kHz entran dos Flat que antes se perdían — 11izq_d20260211_t7 a
+    55.27 s (31.6 dB de tono limpio, `ruido_bajo` 0.42, el único filtro que lo
+    rechazaba) y 1sinmarca_d20260209_t2 a 81.5 s — sin un solo falso positivo
+    nuevo y sin perder ninguna de las que ya encontraba.
+
+    Con 45 kHz entra una tercera, pero también dos falsos cuya fundamental cae
+    en 45.9 y 47.9 kHz: todavía demasiado cerca del ruido.
+
+    En infinito el filtro se comporta como antes de esta corrección."""
 
     # ── De qué tipo es ───────────────────────────────────────────────────────
-    corte_armonico: float = 0.60
+    corte_armonico: float = 0.55
     """En qué fracción de los frames tiene que haber energía en 2·f0 para
-    considerar que la llamada tiene armónico. Es el primer corte del árbol:
-    separa {Flat, FM} de harmonic."""
+    considerar que la llamada tiene armónico. Primer corte del árbol.
+
+    Va de la mano de `tol_armonico`: el corte sólo significa algo si lo que se
+    cuenta son armónicos y no moteado. Barrido de ancho × corte sobre las
+    anotadas, promediando los recalls de las tres clases:
+
+        ancho   corte   harmonic    Flat      FM   promedio
+        ±8%      0.60     93.3%    66.7%   100.0%    86.7%   ← antes
+        ±3%      0.55     93.3%    77.8%   100.0%    90.4%   ← elegido
+        ±2%      0.55     91.8%    77.8%   100.0%    89.9%"""
 
     corte_recorrido_fm: float = 2.00
     """Cuánto puede moverse el contorno (kHz, percentil 90 menos percentil 10)
@@ -94,16 +139,33 @@ class Parametros:
     """Cuánto tiene que sobresalir el armónico. Va más bajo que snr_min_db
     porque el armónico suele venir bastante más débil que la fundamental."""
 
-    tol_armonico: float = 0.08
+    tol_armonico: float = 0.03
     """Ancho de la ventana donde se busca el armónico, como fracción de 2·f0.
 
-    Más ancho de lo que parecería razonable, y a propósito. En el papel
-    conviene angosta: el armónico cae en 2·f0 con precisión de uno o dos bins,
-    y ensanchar sólo agrega la chance de contar otra cosa — el artefacto de
-    97.7-98.6 kHz de estas grabaciones queda justo al lado del armónico de una
-    llamada plana de 48.3 kHz. Pero medido gana la ancha: 0.02 y 0.08 empatan
-    en el corte binario (87.7%) y de punta a punta la ancha da 75.3% de recall
-    promedio contra 71.6%.
+    Estuvo en 0.08 y era el error más caro del clasificador. El test toma el
+    **máximo** de la ventana y lo compara contra `snr_armonico_db`; con ±8%
+    sobre 100 kHz la ventana mide ±8 kHz, unos 33 bins, y el máximo de 33 bins
+    de ruido supera 10 dB casi siempre. No medía armónico, medía lo rugosa que
+    es la banda de ~98-108 kHz, que es donde vive el moteado del equipo.
+
+    Comprobado corriendo el mismo test en frecuencias donde un armónico es
+    imposible, sobre el Flat de 11izq_d20260211_t7 a 55.27 s:
+
+        múltiplo de f0      ±8%     ±3%
+        2.00 (el armónico)  0.61    0.39
+        2.15 (no existe)    0.58    0.00
+        1.70 (no existe)    0.00    0.00
+
+    Con ±8% el control da casi lo mismo que el armónico: el descriptor no
+    distinguía nada. Esa llamada se tipificaba harmonic y la planilla dice
+    Flat; con ±3% sale Flat.
+
+    Por qué no se puede tapar la banda del artefacto y listo: el armónico de
+    una llamada real cae justo ahí. De las 195 harmonic anotadas, 2·f0 tiene
+    mediana 94.7 kHz y 90 caen dentro de 95-110 kHz. Y lo permanente ya está
+    descontado — `r_db` divide por la mediana temporal de cada bin, así que un
+    tono fijo se cancela solo; lo que sobrevive es el moteado, que titila y
+    por eso ninguna mediana lo borra.
 
     Intento fallido, para no repetirlo: descontar el fondo local de esa banda
     para que el artefacto se cancele solo empeora en las doce combinaciones
