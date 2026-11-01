@@ -150,8 +150,6 @@ class DetectorTipos:
                      (f_pico < par.ruido_bajo_f0_hz))
         bueno = ((snr >= par.snr_min_db) & (conc >= par.conc_min) &
                  (broad <= par.broad_max) & ~veto_bajo)
-        if not bueno.any():
-            return []
 
         dt = HOP / float(sr)
         min_frames = max(2, int(par.min_duracion_ms / 1000.0 / dt))
@@ -164,29 +162,94 @@ class DetectorTipos:
             # Se mide y se clasifica con el mismo camino que usa la
             # calibración: contorno() vuelve a aislar la llamada alrededor del
             # centro, la extiende y le busca el armónico.
-            centro = float(an.t[(i0 + i1) // 2])
-            d = an.medir(centro)
-            if d is None:
-                continue
-            r: Optional[Resultado] = clasificar(d, par)
-            if r is None:
-                continue
-            if d.duracion_ms < par.min_duracion_ms:
-                continue
+            v = self._armar(an, dt, i0, i1, float(an.t[(i0 + i1) // 2]))
+            if v is not None:
+                salida.append(v)
 
-            medio = d.f0_mediana_khz * 1000.0
-            salida.append(Vocalizacion(
-                inicio_s=float(an.t[i0]),
-                fin_s=float(an.t[i1] + dt),
-                tipo=r.tipo,
-                f0_khz=d.f0_mediana_khz,
-                fmin_hz=medio - d.recorrido_khz * 500.0,
-                fmax_hz=medio + d.recorrido_khz * 500.0,
-                snr_db=d.snr_max_db,
-                motivo=r.motivo,
-                descriptores=d,
-            ))
+        salida.extend(self._por_armonico(an, bueno, broad, dt, min_frames,
+                                         hueco, salida))
         return salida
+
+    def _por_armonico(self, an: Analizador, bueno: np.ndarray,
+                      broad: np.ndarray, dt: float, min_frames: int,
+                      hueco: int,
+                      ya: List[Vocalizacion]) -> List[Vocalizacion]:
+        """
+        Segundo pase: llamadas que se ven por el armónico y no por la
+        fundamental.
+
+        El primer pase sólo puede encontrar una llamada si su fundamental
+        supera `snr_min_db`. En muchas vocalizaciones de estas grabaciones el
+        armónico viene bastante más fuerte que la fundamental — medido, el
+        pico mediano de las complex_harmonic cae en 89 kHz — y entonces lo más
+        nítido del espectrograma queda invisible para el detector.
+
+        Acá se entra al revés: un pico fuerte en la banda del armónico, que
+        además tenga algo de energía en la mitad de su frecuencia. Lo segundo
+        es lo que lo separa de un sonido suelto: un armónico sin fundamental
+        no es un armónico.
+
+        El pase es **aditivo**: sólo mira frames que el primero ya descartó y
+        descarta lo que caiga sobre algo ya encontrado, así que no puede
+        cambiar lo que el detector venía dando.
+        """
+        par = self.par
+        if not np.isfinite(par.snr_entrada_arm_db):
+            return []
+
+        snr_arm, f_arm, snr_mitad = an.perfil_armonico()
+        f0 = f_arm / 2.0
+        lo, hi = par.banda_f0
+        abre = ((snr_arm >= par.snr_entrada_arm_db) &
+                (snr_mitad >= par.snr_f0_debil_db) &
+                (f0 >= lo) & (f0 <= hi) &
+                (broad <= par.broad_max) & ~bueno)
+        if not abre.any():
+            return []
+
+        # La fundamental de estas llamadas está por debajo de snr_min_db, así
+        # que el contorno hay que buscarlo con el umbral flojo o no encuentra
+        # nada — es la misma razón por la que el primer pase no las ve.
+        nuevas: List[Vocalizacion] = []
+        for i0, i1 in self._tramos(abre, f0, hueco):
+            if i1 - i0 + 1 < min_frames:
+                continue
+            ini, fin = float(an.t[i0]), float(an.t[i1] + dt)
+            if any(v.inicio_s < fin and ini < v.fin_s for v in ya):
+                continue
+            v = self._armar(an, dt, i0, i1, float(an.t[(i0 + i1) // 2]),
+                            snr_min=par.snr_f0_debil_db)
+            if v is not None:
+                nuevas.append(v)
+        return nuevas
+
+    def _armar(self, an: Analizador, dt: float, i0: int, i1: int,
+               centro: float, snr_min: Optional[float] = None
+               ) -> Optional[Vocalizacion]:
+        """Mide el tramo, lo clasifica y arma la Vocalizacion."""
+        par = self.par
+        d = an.medir(centro) if snr_min is None else an.medir(centro,
+                                                              snr_min=snr_min)
+        if d is None:
+            return None
+        r: Optional[Resultado] = clasificar(d, par)
+        if r is None:
+            return None
+        if d.duracion_ms < par.min_duracion_ms:
+            return None
+
+        medio = d.f0_mediana_khz * 1000.0
+        return Vocalizacion(
+            inicio_s=float(an.t[i0]),
+            fin_s=float(an.t[i1] + dt),
+            tipo=r.tipo,
+            f0_khz=d.f0_mediana_khz,
+            fmin_hz=medio - d.recorrido_khz * 500.0,
+            fmax_hz=medio + d.recorrido_khz * 500.0,
+            snr_db=d.snr_max_db,
+            motivo=r.motivo,
+            descriptores=d,
+        )
 
     @staticmethod
     def _tramos(bueno: np.ndarray, f_pico: np.ndarray,

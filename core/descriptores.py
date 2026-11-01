@@ -176,6 +176,46 @@ class Analizador:
         ruido_bajo = (self.r_db[self._banda_baja] > 6.0).mean(axis=0)
         return snr, f_pico, concentracion, banda_ancha, ruido_bajo
 
+    def perfil_armonico(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Devuelve (snr_arm, f_arm, snr_mitad) por frame.
+
+        Es el perfil de la *segunda* puerta del detector. `perfil()` busca el
+        pico en la banda de la fundamental, y eso deja afuera las llamadas
+        cuyo armónico viene bastante más fuerte que ella: si la fundamental no
+        llega al umbral, la llamada no existe para el detector por más clara
+        que se vea el armónico. Acá se mira al revés — el pico en la banda del
+        armónico, y cuánta energía hay en la mitad de esa frecuencia, que es
+        donde tendría que estar la fundamental.
+        """
+        lo = self.par.arm_entrada_min_hz
+        hi = min(self.par.arm_entrada_max_hz, self.sr / 2.0)
+        n = self.r_db.shape[1]
+        banda = (self.freqs >= lo) & (self.freqs <= hi)
+        if not banda.any():
+            vacio = np.full(n, -np.inf, dtype=np.float32)
+            return vacio, np.zeros(n, dtype=np.float32), vacio.copy()
+
+        sub = self.r_db[banda]
+        f_sub = self.freqs[banda]
+        pico = sub.argmax(axis=0)
+        cols = np.arange(n)
+        snr_arm = sub[pico, cols]
+        f_arm = f_sub[pico]
+
+        # Nivel en f_arm/2. El ancho de la ventana se toma en bins y fijo: a
+        # tol_armonico=0.03 sobre esta banda son 2 o 3 bins para cualquier
+        # frecuencia del rango, así que calcularlo frame a frame no cambiaría
+        # el resultado y cuesta un bucle de decenas de miles de vueltas.
+        df = float(self.freqs[1] - self.freqs[0])
+        k = max(1, int(round(self.par.tol_armonico * (lo + hi) / 4.0 / df)))
+        centro = np.clip(np.round(f_arm / 2.0 / df).astype(np.int64),
+                         0, len(self.freqs) - 1)
+        filas = np.clip(centro[None, :] + np.arange(-k, k + 1)[:, None],
+                        0, len(self.freqs) - 1)
+        snr_mitad = np.take_along_axis(self.r_db, filas, axis=0).max(axis=0)
+        return snr_arm, f_arm, snr_mitad
+
     # ── Contorno ────────────────────────────────────────────────────────────
 
     def contorno(self, t_centro: float, ventana_s: float = 0.35,

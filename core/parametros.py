@@ -176,6 +176,37 @@ class Parametros:
     broad_max: float = 0.25
     """Fracción máxima de la banda de análisis encendida a la vez."""
 
+    # ── Segunda puerta: llamadas con la fundamental débil ────────────────────
+    snr_entrada_arm_db: float = 22.0
+    """Cuántos dB tiene que llegar un pico de la banda del armónico para abrir
+    la segunda puerta del detector. En infinito la puerta queda cerrada y el
+    detector se comporta como antes de agregarla.
+
+    Va más alto que `snr_min_db` a propósito: es una entrada secundaria y lo
+    que entre por acá no tuvo que probar nada en la banda de la fundamental."""
+
+    snr_f0_debil_db: float = 10.0
+    """Cuánto tiene que haber en la mitad de esa frecuencia para aceptar que
+    es un armónico y no un sonido suelto. Es el mínimo que se le pide a una
+    fundamental que ya sabemos débil; con el umbral normal no entraría
+    ninguna, que es justo el problema que la puerta viene a resolver."""
+
+    arm_entrada_min_hz: float = 87_500.0
+    arm_entrada_max_hz: float = 95_000.0
+    """Dónde se busca ese pico. La banda es angosta y eso es lo que hace que
+    la puerta no ensucie. Medido sobre tres sesiones, 754.000 frames, mirando
+    qué fracción de los disparos cae sobre una vocalización anotada:
+
+        sub-banda        dispara     útiles
+        72.5-87.5 kHz     0.01%      0-30%    ← casi nunca es una llamada
+        87.5-95.0 kHz     0.02%     48-64%    ← elegida
+        95.0-100  kHz     2.15%      4-5%     ← el moteado del equipo
+
+    Con el piso en 72 kHz la puerta entraba 4 anotadas y 17 falsos positivos;
+    subiéndolo a 87.5 entra 2 anotadas y **ningún** falso. Y el techo importa
+    tanto como el piso: arriba de 95 kHz la puerta dispararía cien veces más
+    seguido y casi siempre por el artefacto."""
+
     analisis_min_hz: float = 30_000.0
     analisis_max_hz: float = 110_000.0
     """Banda donde se mide la energía de banda ancha. Va más arriba que
