@@ -61,16 +61,19 @@ _RE_TIMESTAMP = re.compile(r'^\s*(\d+):(\d+(?:\.\d+)?)\s*$')
 # de la planilla: se marcan acá para que quede asentado por qué quedan afuera
 # y para poder volver a incluirlas si la cátedra corrige el Excel.
 #
-# Las tres son del 3er ensayo total (2026-02-10). En las dos primeras los
-# timestamps anotados coinciden en un 83-86% con los del 5to ensayo de la
-# misma rata, y el audio contra el que alinean es justamente el del 5to
-# ensayo: son filas copiadas. La tercera no alinea con ningún wav de las 57
-# carpetas (el mejor candidato queda en 56%, cuando una sesión correcta da
-# 90-100%), así que no hay forma de saber a qué grabación pertenece.
+# Todas son del 2026-02-10 y tienen el mismo problema: lo cargado no pega
+# con su propio audio (0 aciertos en las cinco) y sí con el del 5to ensayo
+# de la misma rata, en la carpeta ensayo3. En 1sinmarca y 21izqy1der el
+# trial 5 ya tiene sus propias filas, así que son la misma grabación anotada
+# dos veces. En 22izq los trials 3 y 4 comparten 10 de 12 timestamps entre
+# sí y los dos describen el audio del trial 5, que no tiene filas propias;
+# 11der t3 es el mismo caso. Medido con el Excel recibido el 2026-11-02.
 SESIONES_DUDOSAS = {
-    ('1sinmarca', 3):  'timestamps duplicados del trial 5 (86% compartidos)',
-    ('21izqy1der', 3): 'timestamps duplicados del trial 5 (83% compartidos)',
-    ('22izq', 3):      'no alinea con ningún audio disponible',
+    ('1sinmarca', 3):  'describe el audio del trial 5 (duplica sus filas)',
+    ('21izqy1der', 3): 'describe el audio del trial 5 (duplica sus filas)',
+    ('22izq', 3):      'describe el audio del trial 5',
+    ('22izq', 4):      'describe el audio del trial 5 (duplica el trial 3)',
+    ('11der', 3):      'describe el audio del trial 5',
 }
 
 

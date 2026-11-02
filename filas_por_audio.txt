@@ -1,0 +1,33 @@
+FILAS DEL EXCEL POR ARCHIVO DE AUDIO
+(registro muestreo sol.xlsx, hoja Registro; micrófono Cancha)
+
+2026-02-09
+audios\2026-02-09\Ensayo1\ch1_(Cancha)T0000001.wav   11izq t1        filas 3, 5-7, 9-10, 14-15, 17-18, 20-21
+audios\2026-02-09\Ensayo1\ch1_(Cancha)T0000002.wav   21izqy1der t1   filas 55-59, 61-66, 68-69, 72-73
+audios\2026-02-09\Ensayo1\ch1_(Cancha)T0000003.wav   1sinmarca t1    filas 233-234, 237-243
+audios\2026-02-09\Ensayo2\ch1_(Cancha)T0000003.wav   11izq t2        filas 24, 26-27, 29-34
+audios\2026-02-09\Ensayo2\ch1_(Cancha)T0000004.wav   21izqy1der t2   filas 194-195, 197-199, 203, 205-208, 210, 212-213
+audios\2026-02-09\Ensayo2\ch1_(Cancha)T0000005.wav   1sinmarca t2    filas 247-251, 253-254, 256-257, 261-262
+
+2026-02-10
+audios\2026-02-10\ensayo1\ch1_(Cancha)T0000004.wav   11izq t3        filas 42-44, 48-51, 54
+audios\2026-02-10\ensayo2\ch1_(Cancha)T0000004.wav   11izq t4        filas 340, 343, 346
+audios\2026-02-10\ensayo2\ch1_(Cancha)T0000005.wav   21izqy1der t4   filas 323-325, 327-330, 333-338
+audios\2026-02-10\ensayo2\ch1_(Cancha)T0000006.wav   1sinmarca t4    filas 348, 351-354, 358-359, 361-365
+audios\2026-02-10\ensayo3\ch1_(Cancha)T0000004.wav   11izq t5        filas 281-282, 285-289, 291-293, 295-296
+audios\2026-02-10\ensayo3\ch1_(Cancha)T0000005.wav   21izqy1der t5   filas 297-303, 306-308, 310-311
+audios\2026-02-10\ensayo3\ch1_(Cancha)T0000006.wav   1sinmarca t5    filas 312-317, 319-320
+
+2026-02-11
+audios\2026-02-11\ensayo1\ch1_(Cancha)T0000001.wav   1sinmarca t6    filas 149-150, 153-154, 157, 159, 162-164
+audios\2026-02-11\ensayo1\ch1_(Cancha)T0000002.wav   21izqy1der t6   filas 110, 113-124, 126-127, 129
+audios\2026-02-11\ensayo1\ch1_(Cancha)T0000005.wav   11izq t6        filas 75-77, 85-86, 88-91
+audios\2026-02-11\ensayo2\ch1_(Cancha)T0000001.wav   1sinmarca t7    filas 166-176
+audios\2026-02-11\ensayo2\ch1_(Cancha)T0000002.wav   21izqy1der t7   filas 131-132, 139-148
+audios\2026-02-11\ensayo2\ch1_(Cancha)T0000005.wav   11izq t7        filas 92, 94-99, 104-105, 107-108
+audios\2026-02-11\ensayo3\ch1_(Cancha)T0000001.wav   1sinmarca t8    filas 178-179, 181-182, 184-188, 190-192
+
+MAL CARGADAS (el Excel dice trial 3, pero los tiempos son del audio del trial 5)
+filas 215-220, 223-230   21izqy1der   ->  audios\2026-02-10\ensayo3\ch1_(Cancha)T0000005.wav
+filas 266-267, 271-273, 276-277   1sinmarca   ->  audios\2026-02-10\ensayo3\ch1_(Cancha)T0000006.wav
+filas 367-375   22izq   ->  probablemente audios\2026-02-10\ensayo3\ch1_(Cancha)T0000001.wav
