@@ -1,7 +1,7 @@
 """
 Panel para mover los umbrales del detector sin tocar código.
 
-Son los siete que mueven la aguja; el resto está en core/parametros.py con la
+Son los que mueven la aguja; el resto está en core/parametros.py con la
 medición que los justifica. Cada control muestra entre paréntesis el valor
 calibrado, para que siempre se vea de cuánto se está apartando.
 
@@ -44,6 +44,14 @@ _CONTROLES = [
     ('corte_recorrido_fm', 'Flat / FM', 0.1, 15.0, 0.1, 2, ' kHz',
      'Cuánto puede moverse el trazo y seguir contando como plano.\n'
      'Por encima de este valor se clasifica como FM.'),
+    ('rescate_z_min', 'Rescate: desvíos', 0.0, 50.0, 0.5, 1, '',
+     'Llamadas cuyo tramo fuerte es corto: se rescatan si sobresalen esta\n'
+     'cantidad de desvíos sobre el ruido del segundo que las rodea (además\n'
+     'de durar y tener armónico). Más bajo rescata más, y también más ruido.\n'
+     'Muy alto (50) apaga el rescate.'),
+    ('fusion_ms', 'Juntar partidas', 0.0, 200.0, 5.0, 0, ' ms',
+     'Dos detecciones a menos de esto y con la misma frecuencia son una\n'
+     'llamada partida en dos, y se cuentan como una. 0 lo apaga.'),
 ]
 
 

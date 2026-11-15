@@ -218,6 +218,72 @@ class Parametros:
     banda_baja_max_hz: float = 25_000.0
     """Techo de la banda 'audible' que delata al ruido mecánico."""
 
+    # ── Rescate de tramos cortos: umbral adaptativo al ruido local ───────────
+    rescate_z_min: float = 7.0
+    """Cuántos desvíos tiene que sobresalir del ruido de su alrededor una
+    llamada para rescatarla aunque su tramo fuerte sea corto.
+
+    El problema que resuelve: el detector exige `min_duracion_ms` de frames
+    por encima de `snr_min_db` *antes* de estirar la llamada con el umbral
+    bajo. Una llamada que pasa 18 dB en pocos frames y después se estira a
+    veinte o treinta queda afuera sin llegar a medirse. Medido sobre las 217
+    anotadas, era el motivo de 20 de las 35 que no encontraba — más que la
+    energía baja, que explica 8.
+
+    Rescatarlas a todas trae ruido: los tramos cortos son sobre todo
+    chasquidos. Por eso a un tramo corto se le pide más que a uno normal:
+    que, ya estirado, dure `rescate_min_frames`, que tenga armónico, y que
+    sobresalga `rescate_z_min` desvíos sobre el ruido de los
+    `ventana_ruido_s` segundos que lo rodean.
+
+    El desvío se mide local y no por audio porque las grabaciones cambian
+    adentro: el percentil 90 del ruido anda en 10 dB casi todo el tiempo,
+    pero hay tramos de 2 s que suben a 17-22 dB cuando la rata se mueve. Un
+    umbral único queda corto en unos y largo en los otros. Se usan mediana y
+    MAD en vez de promedio y desvío estándar para que la propia llamada, o
+    una ráfaga de llamadas, no infle la vara.
+
+    Medido sobre las 217 anotadas (fusión de partidas activa en todas):
+
+        z mínimo   halladas  bien  falsos  precisión
+        (sin z)       191     180    53     78.0%
+         6            191     180    51     78.6%
+         7            189     178    47     79.7%   ← elegido
+         8            187     176    47     79.6%
+
+    Contra el detector sin rescate ni fusión (182 / 171 / 50 / 78.1%) mejora
+    todos los números a la vez. En infinito el rescate queda apagado.
+
+    Intento descartado, para no repetirlo: reemplazar `snr_min_db` por un
+    umbral adaptativo (mediana local + k·MAD, con piso y techo) en la puerta
+    principal. Barrido con k de 5 a 8 y ventanas de 1 y 2 s, se mueve sobre
+    la misma curva que bajar o subir el umbral fijo — k=6 da 187 halladas con
+    75 falsos, k=7 da 173 con 41 — sin ganarle en ningún punto."""
+
+    rescate_min_frames: float = 20.0
+    """Frames que tiene que durar un tramo corto rescatado una vez estirado
+    (a hop 128 y 250 kHz, unos 10 ms). Los chasquidos no se estiran."""
+
+    rescate_frac_armonico: float = 0.55
+    """Fracción de frames con armónico que se le pide a un tramo rescatado.
+    Entre las detecciones de tramo corto, las reales tienen armónico casi
+    siempre y el ruido casi nunca."""
+
+    ventana_ruido_s: float = 1.0
+    """Segundos a cada lado con los que se mide el ruido local para el
+    rescate. Una llamada dura ~30 ms: en 2 s es menos del 2% de los datos y
+    no mueve la mediana. Con 2 s por lado no mejoró nada."""
+
+    fusion_ms: float = 50.0
+    """Dos detecciones seguidas a menos de esto, con la misma fundamental,
+    son una sola llamada partida en dos y se juntan.
+
+    Pasaba porque el tramo fuerte de una llamada se corta en un bache de
+    energía, y las dos mitades se miden con el mismo contorno: salen con la
+    f0 idéntica. La segunda mitad contaba como falso positivo. Medido: 7 de
+    los 50 falsos eran esto, y juntar a 50 ms los elimina sin perder ninguna
+    hallada (a 60 ms ya se pierde una). En 0 la fusión queda apagada."""
+
     # ── Comodidades ──────────────────────────────────────────────────────────
 
     @property

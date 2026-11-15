@@ -27,7 +27,7 @@ minutos a 250 kHz da 234.000 frames, y tenerlo entero en memoria son cientos
 de megas.
 """
 from dataclasses import dataclass, field, replace
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -129,6 +129,7 @@ class DetectorTipos:
 
         encontradas = self._deduplicar(encontradas)
         encontradas.sort(key=lambda v: v.inicio_s)
+        encontradas = self._fusionar(encontradas, self.par.fusion_ms)
         if progress_cb:
             progress_cb(100)
         return encontradas
@@ -155,16 +156,34 @@ class DetectorTipos:
         min_frames = max(2, int(par.min_duracion_ms / 1000.0 / dt))
         hueco = max(1, int(SEPARACION_MS / 1000.0 / dt))
 
+        rescate = np.isfinite(par.rescate_z_min)
+        if rescate:
+            med_ruido, mad_ruido = self._ruido_local(snr, dt, par.ventana_ruido_s)
+
         salida: List[Vocalizacion] = []
         for i0, i1 in self._tramos(bueno, f_pico, hueco):
-            if i1 - i0 + 1 < min_frames:
+            corto = i1 - i0 + 1 < min_frames
+            if corto and not rescate:
                 continue
             # Se mide y se clasifica con el mismo camino que usa la
             # calibración: contorno() vuelve a aislar la llamada alrededor del
             # centro, la extiende y le busca el armónico.
             v = self._armar(an, dt, i0, i1, float(an.t[(i0 + i1) // 2]))
-            if v is not None:
-                salida.append(v)
+            if v is None:
+                continue
+            if corto:
+                # Tramo fuerte corto: sólo entra si, ya estirado, se comporta
+                # como una llamada. Ver rescate_z_min en core/parametros.py.
+                c = (i0 + i1) // 2
+                z = (float(snr[i0:i1 + 1].max()) - med_ruido[c]) / mad_ruido[c]
+                d = v.descriptores
+                if (z < par.rescate_z_min or
+                        d.n_frames < par.rescate_min_frames or
+                        d.frac_armonico < par.rescate_frac_armonico):
+                    continue
+                v = replace(v, motivo=f'{v.motivo}; rescatada: tramo fuerte '
+                                      f'corto, {z:.1f} desvíos sobre el ruido local')
+            salida.append(v)
 
         salida.extend(self._por_armonico(an, bueno, broad, dt, min_frames,
                                          hueco, salida))
@@ -274,6 +293,66 @@ class DetectorTipos:
                 yield i0, anterior
                 i0 = anterior = j
         yield i0, anterior
+
+    @staticmethod
+    def _ruido_local(snr: np.ndarray, dt: float, ventana_s: float,
+                     paso_s: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Nivel típico (mediana) y cuánto salta (MAD) el pico de cada frame,
+        mirando `ventana_s` segundos a cada lado.
+
+        Se calcula cada `paso_s` y se interpola en el medio: el ruido no
+        cambia en menos de un cuarto de segundo, y recalcular la mediana en
+        cada uno de los decenas de miles de frames del bloque es mucho más
+        lento sin cambiar el resultado. Por el mismo motivo se toma un frame
+        de cada dos dentro de la ventana.
+
+        La MAD se lleva a escala de desvío estándar (×1.4826) y se le pone un
+        piso de 0.3 dB, para que un tramo de silencio perfecto no haga que
+        cualquier cosa parezca enorme.
+        """
+        n = len(snr)
+        medio = max(1, int(ventana_s / dt))
+        paso = max(1, int(paso_s / dt))
+        centros = np.arange(0, n, paso)
+        med = np.empty(len(centros))
+        mad = np.empty(len(centros))
+        for j, c in enumerate(centros):
+            tramo = snr[max(0, c - medio):c + medio + 1:2]
+            m = float(np.median(tramo))
+            med[j] = m
+            mad[j] = float(np.median(np.abs(tramo - m))) * 1.4826
+        x = np.arange(n)
+        return (np.interp(x, centros, med),
+                np.maximum(np.interp(x, centros, mad), 0.3))
+
+    @staticmethod
+    def _fusionar(vocs: List[Vocalizacion],
+                  hueco_ms: float) -> List[Vocalizacion]:
+        """
+        Junta las llamadas partidas en dos. Ver fusion_ms en
+        core/parametros.py.
+
+        Se exige la misma fundamental (±1.5 kHz) además de la cercanía: dos
+        llamadas distintas pegadas suelen estar a frecuencias distintas, y
+        las dos mitades de una partida salen con la f0 idéntica porque se
+        miden con el mismo contorno.
+        """
+        if hueco_ms <= 0 or not vocs:
+            return vocs
+        salida = [vocs[0]]
+        for v in vocs[1:]:
+            p = salida[-1]
+            if (v.inicio_s - p.fin_s <= hueco_ms / 1000.0 and
+                    abs(v.f0_khz - p.f0_khz) <= 1.5):
+                # Se queda con la medición de la mitad más fuerte y con el
+                # tramo completo de las dos.
+                mejor = p if p.snr_db >= v.snr_db else v
+                salida[-1] = replace(mejor, inicio_s=p.inicio_s,
+                                     fin_s=max(p.fin_s, v.fin_s))
+            else:
+                salida.append(v)
+        return salida
 
     @staticmethod
     def _deduplicar(vocs: List[Vocalizacion],
