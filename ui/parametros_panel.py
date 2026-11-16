@@ -41,6 +41,10 @@ _CONTROLES = [
     ('corte_armonico', 'Corte de armónico', 0.0, 1.0, 0.05, 2, '',
      'En qué fracción de la llamada tiene que haber energía en el doble de\n'
      'su frecuencia para considerarla “harmonic”.'),
+    ('control_arm_hasta_ms', 'Armónico: control', 0.0, 200.0, 10.0, 0, ' ms',
+     'Hasta cuántos ms antes y después de la llamada se mira la banda del\n'
+     'armónico. Si esa misma mancha aparece a los costados es el moteado\n'
+     'de ~97 kHz y no cuenta como armónico. En 0 queda apagado.'),
     ('corte_recorrido_fm', 'Flat / FM', 0.1, 15.0, 0.1, 2, ' kHz',
      'Cuánto puede moverse el trazo y seguir contando como plano.\n'
      'Por encima de este valor se clasifica como FM.'),

@@ -76,17 +76,21 @@ def clasificar(d: Optional[Descriptores],
     if d is None or d.n_frames < 3:
         return None
 
-    if d.frac_armonico >= par.corte_armonico:
+    # El armónico que cuenta es el propio de la llamada: el que no se repite
+    # a los costados (ver control_arm_hasta_ms en core/parametros.py).
+    arm = (d.frac_armonico_propio if d.frac_armonico_propio is not None
+           else d.frac_armonico)
+    if arm >= par.corte_armonico:
         if AGRUPAR_ARMONICAS:
             return Resultado('harmonic',
-                             f'armónico en {d.frac_armonico:.0%} de los frames')
+                             f'armónico en {arm:.0%} de los frames')
         m = _modulacion(d)
         if m <= par.corte_modulacion:
             return Resultado('harmonic',
-                             f'armónico en {d.frac_armonico:.0%} de los frames, '
+                             f'armónico en {arm:.0%} de los frames, '
                              f'modulación {m:.2f} ≤ {par.corte_modulacion}')
         return Resultado('complex_harmonic',
-                         f'armónico en {d.frac_armonico:.0%} de los frames, '
+                         f'armónico en {arm:.0%} de los frames, '
                          f'modulación {m:.2f} > {par.corte_modulacion}')
 
     if d.recorrido_khz <= par.corte_recorrido_fm:

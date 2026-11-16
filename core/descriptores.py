@@ -60,6 +60,7 @@ class Contorno:
     f0: np.ndarray            # frecuencia de la fundamental (Hz)
     snr: np.ndarray           # dB sobre el fondo de su propia banda
     arm_db: np.ndarray        # dB sobre el fondo en 2·f0, frame por frame
+    arm_ref_db: float = -np.inf  # lo mismo a los costados de la llamada (p90)
 
     @property
     def duracion_ms(self) -> float:
@@ -80,6 +81,9 @@ class Descriptores:
     frac_armonico: float       # fracción de frames con energía en 2·f0
     snr_max_db: float
     n_frames: int
+    # Igual que frac_armonico, pero sin contar los frames donde 2·f0 no
+    # supera lo que hay en esa banda a los costados de la llamada.
+    frac_armonico_propio: Optional[float] = None
 
     @property
     def tiene_armonico(self) -> bool:
@@ -261,6 +265,7 @@ class Analizador:
             f0=f0_grupo,
             snr=snr[grupo],
             arm_db=self._energia_armonico(idx, f0_grupo),
+            arm_ref_db=self._armonico_al_costado(idx, f0_grupo),
         )
 
     def _extender(self, grupo: np.ndarray, snr: np.ndarray, f0: np.ndarray,
@@ -349,6 +354,30 @@ class Analizador:
                 out[i] = self.r_db[ventana, col].max()
         return out
 
+    def _armonico_al_costado(self, idx: np.ndarray, f0: np.ndarray) -> float:
+        """
+        Cuánto hay en la banda del armónico justo antes y justo después de la
+        llamada (percentil 90 de los frames vecinos). Ver control_arm_hasta_ms.
+        """
+        par = self.par
+        if par.control_arm_hasta_ms <= 0 or len(idx) == 0:
+            return -np.inf
+        dt = self.t[1] - self.t[0] if len(self.t) > 1 else HOP / self.sr
+        d0 = int(round(par.control_arm_desde_ms / 1000.0 / dt))
+        d1 = int(round(par.control_arm_hasta_ms / 1000.0 / dt))
+        n = len(self.t)
+        vecinos = np.r_[np.arange(idx[0] - d1, idx[0] - d0),
+                        np.arange(idx[-1] + d0 + 1, idx[-1] + d1 + 1)]
+        vecinos = vecinos[(vecinos >= 0) & (vecinos < n)]
+
+        tol = par.tol_armonico
+        f_arm = 2.0 * float(np.median(f0))
+        banda = ((self.freqs >= f_arm * (1.0 - tol)) &
+                 (self.freqs <= f_arm * (1.0 + tol)))
+        if not len(vecinos) or not banda.any():
+            return -np.inf
+        return float(np.percentile(self.r_db[banda][:, vecinos].max(axis=0), 90))
+
     # ── Descriptores ────────────────────────────────────────────────────────
 
     def describir(self, c: Contorno) -> Descriptores:
@@ -373,6 +402,9 @@ class Analizador:
         finito = np.isfinite(c.arm_db)
         frac = (float((c.arm_db[finito] >= self.par.snr_armonico_db).mean())
                 if finito.any() else 0.0)
+        propio = (float(((c.arm_db[finito] >= self.par.snr_armonico_db) &
+                         (c.arm_db[finito] >= c.arm_ref_db)).mean())
+                  if finito.any() else 0.0)
 
         return Descriptores(
             duracion_ms=c.duracion_ms,
@@ -384,6 +416,7 @@ class Analizador:
             frac_armonico=frac,
             snr_max_db=float(c.snr.max()),
             n_frames=len(c.t),
+            frac_armonico_propio=propio,
         )
 
     def medir(self, t_centro: float, **kw) -> Optional[Descriptores]:

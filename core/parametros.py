@@ -108,9 +108,19 @@ class Parametros:
     En infinito el filtro se comporta como antes de esta corrección."""
 
     # ── De qué tipo es ───────────────────────────────────────────────────────
-    corte_armonico: float = 0.55
+    corte_armonico: float = 0.40
     """En qué fracción de los frames tiene que haber energía en 2·f0 para
-    considerar que la llamada tiene armónico. Primer corte del árbol.
+    considerar que la llamada tiene armónico. Primer corte del árbol. Se
+    compara contra `frac_armonico_propio`, el que ya pasó el control de
+    tiempo (ver control_arm_hasta_ms).
+
+    Bajó de 0.55 a 0.40 junto con ese control. Sin control, en 0.55 había
+    harmonic reales con armónico en justo 50-52% de los frames (llamadas
+    cortas: 5 de 10 frames) que salían Flat o FM, y bajar el corte sin
+    control convertía Flat en harmonic. Con el control, 0.40 y 0.45 dan lo
+    mismo; entre 0.40 y 0.50 casi no hay llamadas de ningún tipo.
+
+    La tabla de abajo es la calibración anterior, sin control de tiempo.
 
     Va de la mano de `tol_armonico`: el corte sólo significa algo si lo que se
     cuenta son armónicos y no moteado. Barrido de ancho × corte sobre las
@@ -120,6 +130,41 @@ class Parametros:
         ±8%      0.60     93.3%    66.7%   100.0%    86.7%   ← antes
         ±3%      0.55     93.3%    77.8%   100.0%    90.4%   ← elegido
         ±2%      0.55     91.8%    77.8%   100.0%    89.9%"""
+
+    control_arm_desde_ms: float = 10.0
+    control_arm_hasta_ms: float = 100.0
+    """Control de tiempo del armónico, en ms antes del comienzo y después del
+    final de la llamada. Un frame cuenta como armónico sólo si 2·f0 supera
+    lo que hay en esa misma banda en esos tramos vecinos (percentil 90).
+
+    Es lo que separa el armónico real del moteado de ~97-105 kHz: el moteado
+    se repite a los costados de la llamada, el armónico no. Ejemplo:
+    1sinmarca_d20260211_t8 a 34.7 s (Flat) tiene una mancha en 97 kHz que
+    coincide con la línea de 48 kHz, pero la misma mancha aparece 40 ms más
+    allá; sin control daba 61% de armónico y salía harmonic.
+
+    La ventana no pasa de 100 ms a propósito: un intento anterior de
+    descontar el fondo de la banda en una ventana larga borraba los
+    armónicos de las llamadas vecinas de la ráfaga (ver tol_armonico), que
+    suelen estar a ~200 ms. Con 40 ms no alcanzaba: el moteado se repite
+    cada 50-60 ms y el control caía entre dos manchas; y en llamadas largas
+    de las que el contorno toma sólo un pedazo (22der_d20260210_t4, 50.2 s)
+    la ventana caía adentro de la misma llamada.
+
+    Validación completa (364 anotadas, Excel del 2026-11-02), mismas 303
+    encontradas y 71 falsos en todos los casos:
+
+        control       corte   tipo bien   viejas   nuevas
+        sin control   0.55      92.7%      94.6%    88.8%   ← antes
+        10-40 ms      0.40      95.7%      97.1%    92.9%
+        10-100 ms     0.40      96.4%      97.1%    94.9%   ← elegido
+
+    Descartar en los tramos vecinos los frames donde hay fundamental no
+    cambió ninguna llamada; no se dejó.
+
+    Sólo lo usa el clasificador (`frac_armonico_propio`); `frac_armonico`
+    queda como estaba porque también lo usa el rescate del detector.
+    Con `control_arm_hasta_ms = 0` el control queda apagado."""
 
     corte_recorrido_fm: float = 2.00
     """Cuánto puede moverse el contorno (kHz, percentil 90 menos percentil 10)
