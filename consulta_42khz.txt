@@ -5,12 +5,15 @@ Excel: registro muestreo sol.xlsx, hoja Registro (versión del 2026-11-02).
 Los números de fila son los que muestra Excel. Los tiempos están en el
 mismo formato que la columna Time_stamp (minutos:segundos).
 
-Hay dos consultas:
+Hay tres consultas:
 
   CONSULTA 1 — Un sonido de ~42 kHz que aparece ~2 s antes de muchas
                llamadas y no está anotado. ¿Es una vocalización?
   CONSULTA 2 — Filas 567-577: dicen rata 2.2der pero el ID_rat es el de
                1.1der. ¿De qué rata y de qué grabación son?
+  CONSULTA 3 — Filas 184 y 186 (1.Sinmarca, 11/02, trial 8): anotadas
+               Flat, pero se ven igual que la fila 182, anotada
+               complex_harmonic. ¿Son Flat o harmonic?
 
 Por qué importan: el detector automático se mide contra este Excel. Si
 una llamada real no está anotada, el detector queda como que "se
@@ -237,6 +240,56 @@ Preguntas
   2. Si es así, ¿se anotó entero ese trial o faltan filas?
 
 ==========================================================================
+CONSULTA 3 — FILAS 184 Y 186: ¿FLAT O HARMONIC?
+==========================================================================
+
+Rata 1.Sinmarca — 11/02/2026 — trial 8
+Audio: audios\2026-02-11\Ensayo3\ch1_(Cancha)T0000001.wav
+
+  Fila   Tiempo   Anotada            Qué dice el detector
+  184    1:04.9   Flat               harmonic
+  186    1:30.02  Flat               harmonic
+  182    0:59.9   complex_harmonic   harmonic   (referencia: misma sesión)
+
+Para el detector, una llamada es "harmonic" si además de la línea
+principal (~48 kHz) hay algo en el doble de su frecuencia (~97 kHz) al
+mismo tiempo.
+
+Qué vimos
+---------
+  - Las tres llamadas son casi iguales: una línea corta en ~48 kHz y, al
+    mismo tiempo, una mancha en ~97 kHz. En la 184 y la 182 la mancha
+    está exactamente a la misma altura (97.7 kHz); en la 186, en 97.2.
+  - La franja de 95-105 kHz tiene en todas las grabaciones un moteado
+    del equipo: manchas que se repiten cada 50-60 ms. Puede ser que en
+    la 184 y la 186 la mancha de 97 kHz sea ese moteado y no un armónico
+    de la llamada: en la 184 hay manchas iguales a los costados, a la
+    misma altura (ver la imagen).
+  - Probamos varias formas de separar las tres llamadas (altura exacta
+    de la mancha, compararla con las manchas de los costados, cuánto más
+    fuerte es) y ninguna funciona sin romper otras llamadas harmonic que
+    hoy se detectan bien. Por ejemplo, ignorar todo lo que esté arriba de
+    97.5 kHz arreglaría la 184 pero rompería 28 harmonic bien anotadas.
+
+Contexto
+--------
+  - En esta misma sesión había otra Flat parecida, la fila 179 (0:34.7).
+    Esa el detector ya la clasifica Flat: en su caso la mancha de 97 kHz
+    se repite claramente a los costados y se descarta como moteado.
+  - Las Flat son el tipo más raro (13 de las 303 llamadas que el
+    detector encuentra), y 3 de ellas son de esta sesión. Por eso vale la
+    pena saber si están bien.
+
+Preguntas
+---------
+  1. Mirando las filas 184 y 186: ¿la mancha de ~97 kHz es parte de la
+     llamada (armónico) o es el moteado de fondo?
+  2. ¿Qué diferencia a la 184/186 (Flat) de la 182 (complex_harmonic)?
+     Si hay un criterio que se use al anotar (por ejemplo, que el
+     armónico tenga que verse a lo largo de toda la llamada, o que baje
+     en diagonal), nos sirve para que el detector lo copie.
+
+==========================================================================
 Archivos que acompañan este texto
   consulta_42khz_ejemplo.png  — Consulta 1: cuatro casos de la rata 1.1izq,
                                 trial 5, con la vista por defecto del
@@ -247,3 +300,8 @@ Archivos que acompañan este texto
                                 el tiempo anotado (±120 ms), en colores.
                                 Paneles 1-4, 6, 8, 10: filas 570-576.
                                 Paneles 5, 7, 9: filas 607, 609, 612.
+  consulta_flat_ejemplo.png   — Consulta 3: filas 184, 186 y 182, en
+                                colores. Rojo = altura de la mancha de
+                                ~97 kHz de la llamada; amarillo = altura
+                                típica del moteado a los costados;
+                                celeste = la línea principal.
