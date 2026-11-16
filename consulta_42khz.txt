@@ -1,0 +1,249 @@
+CONSULTAS PARA LA CÁTEDRA SOBRE EL EXCEL DE VOCALIZACIONES
+==========================================================================
+
+Excel: registro muestreo sol.xlsx, hoja Registro (versión del 2026-11-02).
+Los números de fila son los que muestra Excel. Los tiempos están en el
+mismo formato que la columna Time_stamp (minutos:segundos).
+
+Hay dos consultas:
+
+  CONSULTA 1 — Un sonido de ~42 kHz que aparece ~2 s antes de muchas
+               llamadas y no está anotado. ¿Es una vocalización?
+  CONSULTA 2 — Filas 567-577: dicen rata 2.2der pero el ID_rat es el de
+               1.1der. ¿De qué rata y de qué grabación son?
+
+Por qué importan: el detector automático se mide contra este Excel. Si
+una llamada real no está anotada, el detector queda como que "se
+equivocó" al encontrarla; si una fila está en el audio equivocado, queda
+como que "no la encontró". Hoy estas dos cosas explican 38 de los errores
+que medimos (31 + 7), y no podemos saber si son errores del detector o
+del Excel sin la respuesta de ustedes.
+
+
+==========================================================================
+CONSULTA 1 — SONIDO DE ~42 kHz ~2 SEGUNDOS ANTES DE LAS LLAMADAS
+==========================================================================
+
+Qué encontramos
+---------------
+Al comparar el detector automático contra el Excel, 31 de los 71 sonidos
+que el detector marca y que no están anotados tienen algo en común:
+
+  - Aparecen SIEMPRE unos 2 segundos ANTES de una llamada que sí está
+    anotada (entre 1.9 y 2.2 s antes; nunca después).
+  - Son todos casi iguales: una línea en ~42 kHz y otra al doble, en
+    ~84 kHz, cortas (unas decenas de milisegundos).
+  - Pasa en 16 grabaciones distintas y en las 6 ratas.
+
+En la vista por defecto del programa (gris) se ven poco, porque la línea
+de 42 kHz queda pegada al borde de arriba de la franja de ruido de 0-40 kHz.
+Ver la imagen consulta_42khz_ejemplo.png.
+
+Un indicio de que SÍ son vocalizaciones
+---------------------------------------
+En tres filas de 22der, trial 4 (10/02/2026), lo que está anotado es
+justamente este tipo de sonido: una línea en ~42 kHz con otra en ~85 kHz,
+débil y pegada a la franja de ruido. O sea que en esos casos sí se lo
+consideró una vocalización:
+
+  Audio: audios\2026-02-10\ensayo2\ch1_(Cancha)T0000003.wav
+    Fila 607   1:15.4   anotada harmonic
+    Fila 609   1:20.4   anotada complex_harmonic
+    Fila 612   1:45.5   anotada complex_harmonic
+
+(El sonido empieza entre 25 y 90 milisegundos después del tiempo anotado.
+Ver la imagen consulta_22der_ejemplo.png, paneles 5, 7 y 9.)
+
+Si las 31 de abajo son lo mismo, entonces son llamadas que quedaron sin
+anotar, probablemente porque en la vista gris casi no se ven.
+
+Preguntas
+---------
+  1. ¿Es una vocalización de la rata que quedó sin anotar, o es otra cosa?
+  2. ¿Hay algún aparato del laberinto (dispensador de pellets, puerta, luz,
+     motor) que se active unos 2 segundos antes de que la rata llegue a la
+     recompensa o vocalice? De las llamadas anotadas que vienen después de
+     este sonido, el 65% son CONSUME_REWARD o REACHED_REWARD en el Excel,
+     contra el 39% del total de llamadas.
+  3. Si son llamadas: ¿de qué tipo serían?
+
+Cómo verlo
+----------
+Abrir el audio, ir al minuto indicado y mirar entre 30 y 50 kHz y entre
+80 y 90 kHz. El sonido está en "Sonido a revisar"; la llamada anotada que
+viene después está en "Llamada anotada" (con su fila del Excel).
+Excel: registro muestreo sol.xlsx, hoja Registro (versión del 2026-11-02).
+
+==========================================================================
+
+Rata 11der — 09/02/2026 — trial 1
+Audio: audios\2026-02-09\Ensayo1\ch1_(Cancha)T0000005.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:54.9             0:57.1             517         harmonic
+
+Rata 11izq — 09/02/2026 — trial 1
+Audio: audios\2026-02-09\Ensayo1\ch1_(Cancha)T0000001.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  1:02.6             1:04.7             14          harmonic
+
+Rata 22der — 09/02/2026 — trial 1
+Audio: audios\2026-02-09\Ensayo1\ch1_(Cancha)T0000006.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:40.9             0:43.0             646         complex_harmonic
+
+Rata 11der — 09/02/2026 — trial 2
+Audio: audios\2026-02-09\Ensayo2\ch1_(Cancha)T0000001.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:40.7             0:42.8             502         complex_harmonic
+
+Rata 1sinmarca — 09/02/2026 — trial 2
+Audio: audios\2026-02-09\Ensayo2\ch1_(Cancha)T0000005.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:52.2             0:54.3             251         harmonic
+
+Rata 11izq — 10/02/2026 — trial 3
+Audio: audios\2026-02-10\ensayo1\ch1_(Cancha)T0000004.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:27.4             0:29.6             44          complex_harmonic
+  0:52.6             0:54.7             48          complex_harmonic
+
+Rata 22der — 10/02/2026 — trial 3
+Audio: audios\2026-02-10\ensayo1\ch1_(Cancha)T0000003.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  1:16.8             1:18.8             624         complex_harmonic
+
+Rata 11izq — 10/02/2026 — trial 4
+Audio: audios\2026-02-10\ensayo2\ch1_(Cancha)T0000004.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:19.1             0:21.2             338         complex_harmonic
+
+Rata 1sinmarca — 10/02/2026 — trial 4
+Audio: audios\2026-02-10\ensayo2\ch1_(Cancha)T0000006.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  1:01.2             1:03.2             357         harmonic
+  1:26.3             1:28.3             360         complex_harmonic
+
+Rata 22der — 10/02/2026 — trial 4
+Audio: audios\2026-02-10\ensayo2\ch1_(Cancha)T0000003.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:15.1             0:17.1             598         complex_harmonic
+  1:50.6             1:52.6             614         complex_harmonic
+
+Rata 11izq — 10/02/2026 — trial 5
+Audio: audios\2026-02-10\ensayo3\ch1_(Cancha)T0000004.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:06.3             0:08.4             280         complex_harmonic
+  0:31.6             0:33.6             284         complex_harmonic
+  1:01.7             1:03.8             286         complex_harmonic
+  1:06.7             1:08.8             287         complex_harmonic
+  2:07.2             2:09.3             294         complex_harmonic
+
+Rata 1sinmarca — 10/02/2026 — trial 5
+Audio: audios\2026-02-10\ensayo3\ch1_(Cancha)T0000006.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:57.3             0:59.3             313         complex_harmonic
+  1:22.4             1:24.5             314         complex_harmonic
+  1:52.7             1:54.7             317         harmonic
+
+Rata 21izqy1der — 10/02/2026 — trial 5
+Audio: audios\2026-02-10\ensayo3\ch1_(Cancha)T0000005.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:15.4             0:17.4             296         complex_harmonic
+  0:45.5             0:47.5             298         harmonic
+  0:50.5             0:52.6             299         complex_harmonic
+  1:15.7             1:17.7             300         complex_harmonic
+  1:20.7             1:22.8             301         complex_harmonic
+  1:47.6             1:49.7             304         complex_harmonic
+
+Rata 22der — 10/02/2026 — trial 5
+Audio: audios\2026-02-10\ensayo3\ch1_(Cancha)T0000003.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:36.8             0:38.9             586         complex_harmonic
+  1:32.0             1:34.0             592         complex_harmonic
+
+Rata 11der — 11/02/2026 — trial 6
+Audio: audios\2026-02-11\ensayo1\ch1_(Cancha)T0000003.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:48.0             0:50.1             455         complex_harmonic
+
+Rata 22der — 11/02/2026 — trial 7
+Audio: audios\2026-02-11\ensayo2\ch1_(Cancha)T0000006.wav
+  Sonido a revisar   Llamada anotada    Fila Excel  Tipo anotado
+  0:06.9             0:09.0             532         complex_harmonic
+
+==========================================================================
+Total: 31 casos en 16 grabaciones.
+
+
+==========================================================================
+CONSULTA 2 — FILAS 567-577: ¿2.2der O 1.1der?
+==========================================================================
+
+Qué encontramos
+---------------
+En el Excel, la rata se identifica con dos columnas: ID_rat (un número) y
+Cod_rat (el nombre). En todo el Excel cada número va siempre con el mismo
+nombre:
+
+    ID_rat 1 = 1.1izq        ID_rat 4 = 2.2izq
+    ID_rat 2 = 2.1izqy1der   ID_rat 5 = 1.1der
+    ID_rat 3 = 1.Sinmarca    ID_rat 6 = 2.2der
+
+La única excepción son las filas 567 a 577: dicen ID_rat = 5 (que es 1.1der)
+pero Cod_rat = 2.2der. Son de la fecha 2026.02.10, Trial 4.
+
+Además, 2.2der ya tiene su propio Trial 4 más abajo (filas 597-614, con
+ID_rat = 6), y 1.1der no tiene ningún Trial 4 cargado en todo el Excel.
+
+Las filas con vocalización de ese bloque son:
+
+    Fila   Time_stamp   Call_type
+    570    0:11.2       complex_harmonic
+    571    0:41.2       complex_harmonic
+    572    0:46.5       complex_harmonic
+    573    1:11.5       complex_harmonic
+    574    1:16.6       complex_harmonic
+    575    1:41.7       complex_harmonic
+    576    1:46.3       complex_harmonic
+
+(Las filas 567, 568, 569 y 577 son eventos de conducta sin vocalización.)
+
+Qué dice el audio
+-----------------
+Según el Xmaze, el Trial 4 de cada rata es este audio:
+
+    2.2der  -> audios\2026-02-10\ensayo2\ch1_(Cancha)T0000003.wav
+    1.1der  -> audios\2026-02-10\ensayo2\ch1_(Cancha)T0000002.wav
+
+  - En el audio de 2.2der, en esos 7 tiempos no hay NADA: ni una llamada
+    débil (ver consulta_22der_ejemplo.png, paneles 1, 2, 3, 4, 6, 8 y 10).
+  - En el audio de 1.1der, en 4 de los 7 tiempos hay una llamada, a menos
+    de una décima de segundo de lo anotado:
+
+        Fila 572   0:46.5   llamada en 0:46.53
+        Fila 573   1:11.5   llamada en 1:11.58
+        Fila 574   1:16.6   llamada en 1:16.63
+        Fila 575   1:41.7   llamada en 1:41.78
+
+    Las otras 3 (570, 571, 576) el detector no las encuentra, lo que puede
+    ser porque son débiles; habría que mirarlas.
+
+Nuestra hipótesis: es el Trial 4 de 1.1der, cargado con el nombre de
+2.2der por error. No es seguro: es lo que indican el ID_rat y el audio.
+
+Preguntas
+---------
+  1. ¿Las filas 567-577 son del Trial 4 de 1.1der?
+  2. Si es así, ¿se anotó entero ese trial o faltan filas?
+
+==========================================================================
+Archivos que acompañan este texto
+  consulta_42khz_ejemplo.png  — Consulta 1: cuatro casos de la rata 1.1izq,
+                                trial 5, con la vista por defecto del
+                                programa. Rojo = sonido sin anotar, verde =
+                                llamada anotada 2 s después.
+  consulta_22der_ejemplo.png  — Las 10 filas de 2.2der trial 4 que el
+                                detector no encuentra, cada una centrada en
+                                el tiempo anotado (±120 ms), en colores.
+                                Paneles 1-4, 6, 8, 10: filas 570-576.
+                                Paneles 5, 7, 9: filas 607, 609, 612.
